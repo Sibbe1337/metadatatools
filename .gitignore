@@ -41,4 +41,7 @@ Thumbs.db
 # Application specific
 tmp/
 logs/
-*.log 
+*.log
+
+# Python virtual environment
+venv/ 
