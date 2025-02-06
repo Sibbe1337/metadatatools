@@ -1,0 +1,15 @@
+# Core dependencies
+requests>=2.31.0
+python-dotenv>=1.0.0
+
+# LLM API clients
+openai>=1.12.0
+anthropic>=0.18.1
+
+# Web scraping
+playwright>=1.42.0
+beautifulsoup4>=4.12.0
+
+# Utility packages
+pillow>=10.2.0  # For image processing
+python-dateutil>=2.8.2
