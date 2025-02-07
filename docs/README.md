@@ -1,86 +1,173 @@
-# Metadata Tool Documentation
+# MetadataTool Documentation
 
-## Documentation Structure
+## Overview
+MetadataTool is a comprehensive solution for managing music metadata, providing AI-powered enrichment, DDEX compliance, and efficient storage management.
 
-```plaintext
-docs/
-├── architecture/           # System architecture documentation
-│   ├── overview.md        # High-level architecture overview
-│   ├── components.md      # Detailed component documentation
-│   └── decisions/         # Architecture decision records
-├── development/           # Development guidelines and setup
-│   ├── setup.md          # Development environment setup
-│   ├── guidelines.md     # Coding standards and guidelines
-│   └── workflow.md       # Development workflow
-├── api/                  # API documentation
-│   ├── endpoints.md      # API endpoints documentation
-│   ├── models.md        # Data models
-│   └── examples/        # API usage examples
-├── deployment/          # Deployment documentation
-│   ├── setup.md        # Deployment setup guide
-│   ├── monitoring.md   # Monitoring and alerting
-│   └── scaling.md      # Scaling guidelines
-└── integrations/       # Third-party integrations
-    ├── qwen2-audio/   # Qwen2-Audio integration
-    ├── openai/        # OpenAI integration
-    └── aws/           # AWS services integration
-
-## Quick Links
-
-- [Architecture Overview](architecture/overview.md)
-- [Development Setup](development/setup.md)
-- [API Documentation](api/endpoints.md)
-- [Deployment Guide](deployment/setup.md)
-- [Integration Guides](integrations/README.md)
-
-## Contributing to Documentation
-
-Please follow these guidelines when contributing to the documentation:
-
-1. Use Markdown for all documentation files
-2. Follow the established folder structure
-3. Include code examples where applicable
-4. Keep documentation up to date with code changes
-5. Add diagrams using Mermaid or PlantUML
-6. Reference related documents when appropriate
-
-## Documentation Standards
-
-- Use clear, concise language
-- Include examples and use cases
-- Keep technical accuracy
-- Update related documents
-- Use proper formatting and structure
-- Include version information where relevant
-
-## Building Documentation
-
-This documentation can be built using [mdBook](https://rust-lang.github.io/mdBook/). To build locally:
-
+## Quick Start
 ```bash
-# Install mdBook
-cargo install mdbook
+# Clone the repository
+git clone https://github.com/yourusername/metadatatool.git
 
-# Build documentation
-mdbook build
+# Install dependencies
+go mod download
 
-# Serve documentation locally
-mdbook serve --open
+# Run the application
+go run cmd/metadatatool/main.go
 ```
 
-## Documentation Versions
+## Architecture
+The application follows clean architecture principles with the following layers:
+- Domain (core business logic)
+- Use Cases (application logic)
+- Repositories (data access)
+- Handlers (HTTP/transport layer)
 
-The documentation is versioned alongside the codebase. Each release tag has its corresponding documentation version.
+## Core Features
+1. **Metadata Management**
+   - Track metadata CRUD operations
+   - Batch processing
+   - Version control
 
-## Getting Help
+2. **AI Integration**
+   - Automatic metadata enrichment
+   - Confidence scoring
+   - Batch processing
 
-If you need help with the documentation:
+3. **Storage Management**
+   - S3-compatible storage
+   - File versioning
+   - Cleanup management
 
-1. Check the existing documentation
-2. Look for related architecture decision records
-3. Contact the development team
-4. Create an issue in the repository
+4. **DDEX Integration**
+   - ERN 4.3 support
+   - Validation
+   - Import/Export
+
+## API Reference
+### Track Management
+```graphql
+type Track {
+  id: ID!
+  title: String!
+  artist: String!
+  # ... other fields
+}
+
+type Query {
+  track(id: ID!): Track
+  tracks(filter: TrackFilter): [Track!]!
+}
+
+type Mutation {
+  createTrack(input: CreateTrackInput!): Track!
+  updateTrack(id: ID!, input: UpdateTrackInput!): Track!
+  deleteTrack(id: ID!): Boolean!
+}
+```
+
+### File Management
+```graphql
+type File {
+  id: ID!
+  name: String!
+  size: Int!
+  url: String!
+}
+
+type Mutation {
+  uploadFile(file: Upload!): File!
+  deleteFile(id: ID!): Boolean!
+}
+```
+
+## Configuration
+```yaml
+server:
+  port: 8080
+  timeout: 30s
+
+database:
+  host: localhost
+  port: 5432
+  name: metadatatool
+
+ai:
+  provider: openai
+  model: gpt-4
+  maxTokens: 1000
+
+storage:
+  provider: s3
+  bucket: metadatatool
+  region: us-west-2
+```
+
+## Development
+### Prerequisites
+- Go 1.21+
+- PostgreSQL 14+
+- Redis 6+
+- Node.js 18+ (for frontend)
+
+### Local Setup
+1. Copy `.env.example` to `.env`
+2. Configure environment variables
+3. Run database migrations
+4. Start the development server
+
+### Testing
+```bash
+# Run unit tests
+go test ./...
+
+# Run integration tests
+go test -tags=integration ./...
+
+# Run with coverage
+go test -cover ./...
+```
+
+## Deployment
+### Docker
+```bash
+# Build image
+docker build -t metadatatool .
+
+# Run container
+docker run -p 8080:8080 metadatatool
+```
+
+### Kubernetes
+```bash
+# Apply configurations
+kubectl apply -f k8s/
+
+# Check status
+kubectl get pods -n metadatatool
+```
+
+## Troubleshooting
+### Common Issues
+1. **Database Connection**
+   - Check credentials
+   - Verify network access
+   - Check PostgreSQL logs
+
+2. **Storage Issues**
+   - Verify S3 credentials
+   - Check bucket permissions
+   - Validate file paths
+
+3. **AI Service**
+   - Check API keys
+   - Verify rate limits
+   - Monitor response times
+
+## Contributing
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Submit a pull request
 
 ## License
-
-This documentation is licensed under the same terms as the main project. See [LICENSE](../LICENSE) for details. 
+MIT License - see LICENSE file for details 

@@ -66,19 +66,26 @@ func (h *AudioProcessHandler) HandleJob(ctx context.Context, job *domain.Job) er
 		return fmt.Errorf("failed to get track: %w", err)
 	}
 
-	// Download audio file
-	audioData, err := h.storageClient.Download(ctx, payload.StoragePath)
+	// Get file metadata first
+	metadata, err := h.storageClient.GetMetadata(ctx, payload.StoragePath)
+	if err != nil {
+		return fmt.Errorf("failed to get audio file metadata: %w", err)
+	}
+
+	// Download file content
+	content, err := h.storageClient.Download(ctx, payload.StoragePath)
 	if err != nil {
 		return fmt.Errorf("failed to download audio: %w", err)
 	}
+	defer content.Close()
 
-	// Convert StorageFile to ProcessingAudioFile
+	// Convert to ProcessingAudioFile
 	processingFile := &domain.ProcessingAudioFile{
-		Name:    audioData.Name,
-		Path:    audioData.Key,
-		Size:    audioData.Size,
+		Name:    metadata.Name,
+		Path:    metadata.Key,
+		Size:    metadata.Size,
 		Format:  domain.AudioFormat(payload.Format),
-		Content: audioData.Content,
+		Content: content,
 	}
 
 	// Process audio file

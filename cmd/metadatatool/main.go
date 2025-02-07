@@ -27,15 +27,19 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"metadatatool/internal/config"
 	"metadatatool/internal/pkg/analytics"
+	"metadatatool/internal/pkg/ddex"
 	"metadatatool/internal/pkg/domain"
 	"metadatatool/internal/repository/ai"
 	"metadatatool/internal/repository/base"
 	"metadatatool/internal/usecase"
+	"os"
+	"strings"
 
 	_ "github.com/lib/pq"
 )
@@ -155,7 +159,16 @@ func initializeServices(cfg *config.Config) (*services, error) {
 
 	// Initialize repositories and services
 	trackRepo := base.NewTrackRepository(db)
-	ddexService := usecase.NewDDEXService()
+
+	// Initialize DDEX service
+	schemaValidator := ddex.NewXMLSchemaValidator()
+	ddexConfig := &usecase.DDEXConfig{
+		MessageSender:    "MetadataTool",
+		MessageRecipient: "DSP",
+		SchemaPath:       "schemas/ddex/ern/4.3/release-notification.xsd",
+		ValidateSchema:   true,
+	}
+	ddexService := usecase.NewDDEXService(schemaValidator, ddexConfig)
 
 	return &services{
 		analytics: analyticsService,
@@ -235,9 +248,34 @@ func exportTracks(ctx context.Context, trackID, batchFile, format string, repo d
 			return fmt.Errorf("failed to get track: %w", err)
 		}
 		tracks = append(tracks, track)
+	} else if batchFile != "" {
+		// Read track IDs from batch file
+		content, err := os.ReadFile(batchFile)
+		if err != nil {
+			return fmt.Errorf("failed to read batch file: %w", err)
+		}
+
+		// Parse track IDs (assuming one ID per line)
+		trackIDs := strings.Split(strings.TrimSpace(string(content)), "\n")
+		for _, id := range trackIDs {
+			id = strings.TrimSpace(id)
+			if id == "" {
+				continue
+			}
+			track, err := repo.GetByID(ctx, id)
+			if err != nil {
+				return fmt.Errorf("failed to get track %s: %w", id, err)
+			}
+			if track != nil {
+				tracks = append(tracks, track)
+			}
+		}
 	} else {
-		// TODO: Implement batch file processing
-		return fmt.Errorf("batch file processing not implemented yet")
+		return fmt.Errorf("either track ID or batch file is required")
+	}
+
+	if len(tracks) == 0 {
+		return fmt.Errorf("no tracks found to export")
 	}
 
 	if format == "ddex" {
@@ -247,8 +285,12 @@ func exportTracks(ctx context.Context, trackID, batchFile, format string, repo d
 		}
 		fmt.Println(output)
 	} else if format == "json" {
-		// TODO: Implement JSON export
-		return fmt.Errorf("JSON export not implemented yet")
+		// Implement JSON export
+		jsonData, err := json.MarshalIndent(tracks, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal tracks to JSON: %w", err)
+		}
+		fmt.Println(string(jsonData))
 	} else {
 		return fmt.Errorf("unsupported format: %s", format)
 	}

@@ -79,6 +79,7 @@ type AudioProcessOptions struct {
 	Format          AudioFormat // Audio format
 	AnalyzeAudio    bool        // Whether to perform audio analysis
 	ExtractMetadata bool        // Whether to extract metadata
+	StartTime       time.Time   // When the processing started
 }
 
 // AudioProcessor defines the interface for audio processing
@@ -90,6 +91,7 @@ type AudioProcessor interface {
 // AudioProcessResult contains the results of audio processing
 type AudioProcessResult struct {
 	Metadata     *CompleteTrackMetadata // Complete track metadata
+	Analysis     *AudioAnalysis         // Audio analysis results
 	AnalyzerInfo string                 // Information about the analyzer used
 }
 
@@ -147,21 +149,18 @@ type AudioSegment struct {
 
 // AudioService handles audio file operations
 type AudioService interface {
+	// Process processes an audio file and returns the results
+	Process(ctx context.Context, file *ProcessingAudioFile, options *AudioProcessOptions) (*AudioProcessResult, error)
+
 	// Upload stores an audio file and returns its URL
-	Upload(ctx context.Context, file *StorageFile) (string, error)
+	Upload(ctx context.Context, file *StorageFile) error
 
 	// GetURL retrieves a pre-signed URL for an audio file
 	GetURL(ctx context.Context, id string) (string, error)
-}
 
-// StorageClient defines the interface for storage operations
-type StorageClient interface {
-	// Upload uploads a file to storage
-	Upload(ctx context.Context, file *StorageFile) error
+	// Download downloads an audio file from storage
+	Download(ctx context.Context, url string) (*StorageFile, error)
 
-	// Download downloads a file from storage
-	Download(ctx context.Context, path string) (*StorageFile, error)
-
-	// Delete deletes a file from storage
-	Delete(ctx context.Context, path string) error
+	// Delete deletes an audio file from storage
+	Delete(ctx context.Context, url string) error
 }

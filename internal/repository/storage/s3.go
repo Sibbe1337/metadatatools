@@ -327,7 +327,7 @@ func (s *s3Storage) CleanupTempFiles(ctx context.Context) error {
 	// List all temporary files
 	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
 		Bucket: aws.String(s.bucket),
-		Prefix: aws.String(domain.StoragePathTemp),
+		Prefix: aws.String(domain.StoragePathTemp.String()),
 	})
 
 	now := time.Now()

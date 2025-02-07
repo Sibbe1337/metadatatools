@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -21,6 +22,48 @@ type Track struct {
 
 	// Track metadata
 	Metadata CompleteTrackMetadata `json:"metadata"`
+
+	// Relationships
+	LabelID   string   `json:"labelId"`
+	ArtistIDs []string `json:"artistIds"`
+	ReleaseID string   `json:"releaseId"`
+
+	// Versioning
+	Version    int    `json:"version"`
+	PreviousID string `json:"previousId,omitempty"`
+
+	// Status
+	Status    TrackStatus `json:"status"`
+	StatusMsg string      `json:"statusMsg,omitempty"`
+}
+
+// TrackStatus represents the current status of a track
+type TrackStatus string
+
+const (
+	// Track status constants
+	TrackStatusDraft    TrackStatus = "draft"
+	TrackStatusPending  TrackStatus = "pending"
+	TrackStatusActive   TrackStatus = "active"
+	TrackStatusInactive TrackStatus = "inactive"
+	TrackStatusRejected TrackStatus = "rejected"
+	TrackStatusDeleted  TrackStatus = "deleted"
+)
+
+// IsValid checks if the track status is valid
+func (s TrackStatus) IsValid() bool {
+	switch s {
+	case TrackStatusDraft, TrackStatusPending, TrackStatusActive,
+		TrackStatusInactive, TrackStatusRejected, TrackStatusDeleted:
+		return true
+	default:
+		return false
+	}
+}
+
+// String returns the string representation of the track status
+func (s TrackStatus) String() string {
+	return string(s)
 }
 
 // Helper methods to access metadata fields
@@ -72,6 +115,59 @@ func (t *Track) SetChannels(v int)       { t.Metadata.Technical.Channels = v }
 func (t *Track) SetPublisher(v string)   { t.Metadata.Additional.Publisher = v }
 func (t *Track) SetCopyright(v string)   { t.Metadata.Additional.Copyright = v }
 func (t *Track) SetLyrics(v string)      { t.Metadata.Additional.Lyrics = v }
+
+// Additional helper methods for relationships
+func (t *Track) SetLabelID(id string) {
+	t.LabelID = id
+	t.UpdatedAt = time.Now()
+}
+
+func (t *Track) AddArtist(id string) {
+	for _, existingID := range t.ArtistIDs {
+		if existingID == id {
+			return
+		}
+	}
+	t.ArtistIDs = append(t.ArtistIDs, id)
+	t.UpdatedAt = time.Now()
+}
+
+func (t *Track) RemoveArtist(id string) {
+	for i, existingID := range t.ArtistIDs {
+		if existingID == id {
+			t.ArtistIDs = append(t.ArtistIDs[:i], t.ArtistIDs[i+1:]...)
+			t.UpdatedAt = time.Now()
+			return
+		}
+	}
+}
+
+func (t *Track) SetRelease(id string) {
+	t.ReleaseID = id
+	t.UpdatedAt = time.Now()
+}
+
+// Version management methods
+func (t *Track) IncrementVersion() {
+	t.Version++
+	t.UpdatedAt = time.Now()
+}
+
+func (t *Track) SetPreviousVersion(id string) {
+	t.PreviousID = id
+	t.UpdatedAt = time.Now()
+}
+
+// Status management methods
+func (t *Track) SetStatus(status TrackStatus, msg string) error {
+	if !status.IsValid() {
+		return fmt.Errorf("invalid track status: %s", status)
+	}
+	t.Status = status
+	t.StatusMsg = msg
+	t.UpdatedAt = time.Now()
+	return nil
+}
 
 // TrackRepository defines the interface for track data operations
 type TrackRepository interface {

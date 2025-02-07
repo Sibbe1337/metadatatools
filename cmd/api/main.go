@@ -82,10 +82,21 @@ func main() {
 		log.Fatalf("Failed to initialize AI service: %v", err)
 	}
 
+	// Create track validator
+	validator := domain.NewTrackValidator()
+
+	// Create track handler
+	trackHandler := handler.NewTrackHandler(
+		trackRepo,
+		aiService,
+		validator,
+		errorTracker,
+		cfg.Storage.Bucket,
+	)
+
 	// Initialize handlers
 	healthHandler := handler.NewHealthHandler(redisClient)
 	authHandler := handler.NewAuthHandler(authService, userRepo)
-	trackHandler := handler.NewTrackHandler(trackRepo, aiService, errorTracker, cfg.Storage.Bucket)
 	audioHandler := handler.NewAudioHandler(storageService, trackRepo)
 	ddexHandler := handler.NewDDEXHandler(trackRepo)
 	metricsHandler := handler.NewMetricsHandler()

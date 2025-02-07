@@ -256,11 +256,13 @@ func (s *OpenAIService) BatchProcess(ctx context.Context, tracks []*domain.Track
 	// Return combined error if any occurred
 	if len(errors) > 0 {
 		var errMsg strings.Builder
-		errMsg.WriteString("batch processing encountered errors:\n")
+		errMsg.WriteString("AI validation failed:\n")
 		for _, err := range errors {
-			errMsg.WriteString("- " + err.Error() + "\n")
+			errMsg.WriteString("- ")
+			errMsg.WriteString(err.Error())
+			errMsg.WriteString("\n")
 		}
-		return fmt.Errorf(errMsg.String())
+		return fmt.Errorf("%s", errMsg.String())
 	}
 
 	return nil

@@ -3,12 +3,14 @@ package handler
 import (
 	"fmt"
 	"metadatatool/internal/pkg/domain"
+	apperrors "metadatatool/internal/pkg/errors"
 	"metadatatool/internal/pkg/errortracking"
 	"metadatatool/internal/pkg/metrics"
 	"metadatatool/internal/pkg/utils"
 	"net/http"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -19,6 +21,7 @@ import (
 type TrackHandler struct {
 	trackRepo    domain.TrackRepository
 	aiService    domain.AIService
+	validator    domain.Validator
 	errorTracker *errortracking.ErrorTracker
 	storageRoot  string
 }
@@ -27,12 +30,14 @@ type TrackHandler struct {
 func NewTrackHandler(
 	trackRepo domain.TrackRepository,
 	aiService domain.AIService,
+	validator domain.Validator,
 	errorTracker *errortracking.ErrorTracker,
 	storageRoot string,
 ) *TrackHandler {
 	return &TrackHandler{
 		trackRepo:    trackRepo,
 		aiService:    aiService,
+		validator:    validator,
 		errorTracker: errorTracker,
 		storageRoot:  storageRoot,
 	}
@@ -60,12 +65,12 @@ func (h *TrackHandler) UploadTrack(c *gin.Context) {
 
 	file, err := c.FormFile("file")
 	if err != nil {
-		h.handleError(c, http.StatusBadRequest, "invalid file upload", err)
+		h.handleError(c, apperrors.NewValidationError("invalid file upload", err.Error()))
 		return
 	}
 
 	if !utils.IsValidAudioFormat(file.Filename) {
-		h.handleError(c, http.StatusBadRequest, "invalid audio format", nil)
+		h.handleError(c, apperrors.NewValidationError("invalid audio format", "unsupported file format"))
 		return
 	}
 
@@ -73,15 +78,17 @@ func (h *TrackHandler) UploadTrack(c *gin.Context) {
 	filepath := filepath.Join(h.storageRoot, filename)
 
 	if err := c.SaveUploadedFile(file, filepath); err != nil {
-		h.handleError(c, http.StatusInternalServerError, "failed to save file", err)
+		h.handleError(c, apperrors.NewStorageError("failed to save file", err))
 		return
 	}
 
 	track := &domain.Track{
+		ID:          uuid.New().String(),
 		StoragePath: filepath,
 		FileSize:    file.Size,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
+		Status:      domain.TrackStatusPending,
 		Metadata: domain.CompleteTrackMetadata{
 			BasicTrackMetadata: domain.BasicTrackMetadata{
 				Title:     c.PostForm("title"),
@@ -91,18 +98,25 @@ func (h *TrackHandler) UploadTrack(c *gin.Context) {
 				UpdatedAt: time.Now(),
 			},
 			Technical: domain.AudioTechnicalMetadata{
-				Format: domain.AudioFormat(utils.GetAudioFormat(file.Filename)),
+				Format:   domain.AudioFormat(utils.GetAudioFormat(file.Filename)),
+				FileSize: file.Size,
 			},
 		},
 	}
 
-	if err := validateTrack(track); err != nil {
-		h.handleError(c, http.StatusBadRequest, "invalid track data", err)
+	// Validate track
+	result := h.validator.Validate(track)
+	if !result.Valid {
+		details := make([]string, len(result.Issues))
+		for i, issue := range result.Issues {
+			details[i] = fmt.Sprintf("%s: %s", issue.Field, issue.Message)
+		}
+		h.handleError(c, apperrors.NewValidationError("invalid track data", strings.Join(details, "; ")))
 		return
 	}
 
 	if err := h.trackRepo.Create(c, track); err != nil {
-		h.handleError(c, http.StatusInternalServerError, "failed to create track", err)
+		h.handleError(c, apperrors.NewDatabaseError("failed to create track", err))
 		return
 	}
 
@@ -139,17 +153,29 @@ func (h *TrackHandler) CreateTrack(c *gin.Context) {
 
 	var track domain.Track
 	if err := c.ShouldBindJSON(&track); err != nil {
-		h.handleError(c, http.StatusBadRequest, "invalid request body", err)
+		h.handleError(c, apperrors.NewValidationError("invalid request body", err.Error()))
 		return
 	}
 
-	if err := validateTrack(&track); err != nil {
-		h.handleError(c, http.StatusBadRequest, "invalid track data", err)
+	// Set default values
+	track.ID = uuid.New().String()
+	track.CreatedAt = time.Now()
+	track.UpdatedAt = time.Now()
+	track.Status = domain.TrackStatusPending
+
+	// Validate track
+	result := h.validator.Validate(&track)
+	if !result.Valid {
+		details := make([]string, len(result.Issues))
+		for i, issue := range result.Issues {
+			details[i] = fmt.Sprintf("%s: %s", issue.Field, issue.Message)
+		}
+		h.handleError(c, apperrors.NewValidationError("invalid track data", strings.Join(details, "; ")))
 		return
 	}
 
 	if err := h.trackRepo.Create(c, &track); err != nil {
-		h.handleError(c, http.StatusInternalServerError, "failed to create track", err)
+		h.handleError(c, apperrors.NewDatabaseError("failed to create track", err))
 		return
 	}
 
@@ -175,18 +201,18 @@ func (h *TrackHandler) GetTrack(c *gin.Context) {
 
 	id := c.Param("id")
 	if id == "" {
-		h.handleError(c, http.StatusBadRequest, "missing track ID", nil)
+		h.handleError(c, apperrors.NewValidationError("missing track ID", "track ID is required"))
 		return
 	}
 
 	track, err := h.trackRepo.GetByID(c, id)
 	if err != nil {
-		h.handleError(c, http.StatusInternalServerError, "failed to get track", err)
+		h.handleError(c, apperrors.NewDatabaseError("failed to get track", err))
 		return
 	}
 
 	if track == nil {
-		h.handleError(c, http.StatusNotFound, "track not found", nil)
+		h.handleError(c, apperrors.NewNotFoundError("track not found"))
 		return
 	}
 
@@ -215,29 +241,57 @@ func (h *TrackHandler) UpdateTrack(c *gin.Context) {
 
 	id := c.Param("id")
 	if id == "" {
-		h.handleError(c, http.StatusBadRequest, "missing track ID", nil)
+		h.handleError(c, apperrors.NewValidationError("missing track ID", "track ID is required"))
 		return
 	}
 
-	var track domain.Track
-	if err := c.ShouldBindJSON(&track); err != nil {
-		h.handleError(c, http.StatusBadRequest, "invalid request body", err)
+	// Get existing track
+	existingTrack, err := h.trackRepo.GetByID(c, id)
+	if err != nil {
+		h.handleError(c, apperrors.NewDatabaseError("failed to get track", err))
 		return
 	}
 
-	track.ID = id
-
-	if err := validateTrack(&track); err != nil {
-		h.handleError(c, http.StatusBadRequest, "invalid track data", err)
+	if existingTrack == nil {
+		h.handleError(c, apperrors.NewNotFoundError("track not found"))
 		return
 	}
 
-	if err := h.trackRepo.Update(c, &track); err != nil {
-		h.handleError(c, http.StatusInternalServerError, "failed to update track", err)
+	// Parse update data
+	var updateData domain.Track
+	if err := c.ShouldBindJSON(&updateData); err != nil {
+		h.handleError(c, apperrors.NewValidationError("invalid request body", err.Error()))
 		return
 	}
 
-	c.JSON(http.StatusOK, track)
+	// Apply updates while preserving certain fields
+	updateData.ID = id
+	updateData.CreatedAt = existingTrack.CreatedAt
+	updateData.UpdatedAt = time.Now()
+	updateData.StoragePath = existingTrack.StoragePath
+	updateData.FileSize = existingTrack.FileSize
+
+	// Validate updated track
+	result := h.validator.Validate(&updateData)
+	if !result.Valid {
+		details := make([]string, len(result.Issues))
+		for i, issue := range result.Issues {
+			details[i] = fmt.Sprintf("%s: %s", issue.Field, issue.Message)
+		}
+		h.handleError(c, apperrors.NewValidationError("invalid track data", strings.Join(details, "; ")))
+		return
+	}
+
+	// Increment version
+	updateData.Version = existingTrack.Version + 1
+	updateData.PreviousID = existingTrack.ID
+
+	if err := h.trackRepo.Update(c, &updateData); err != nil {
+		h.handleError(c, apperrors.NewDatabaseError("failed to update track", err))
+		return
+	}
+
+	c.JSON(http.StatusOK, updateData)
 }
 
 // DeleteTrack removes a track
@@ -259,12 +313,24 @@ func (h *TrackHandler) DeleteTrack(c *gin.Context) {
 
 	id := c.Param("id")
 	if id == "" {
-		h.handleError(c, http.StatusBadRequest, "missing track ID", nil)
+		h.handleError(c, apperrors.NewValidationError("missing track ID", "track ID is required"))
+		return
+	}
+
+	// Get existing track
+	existingTrack, err := h.trackRepo.GetByID(c, id)
+	if err != nil {
+		h.handleError(c, apperrors.NewDatabaseError("failed to get track", err))
+		return
+	}
+
+	if existingTrack == nil {
+		h.handleError(c, apperrors.NewNotFoundError("track not found"))
 		return
 	}
 
 	if err := h.trackRepo.Delete(c, id); err != nil {
-		h.handleError(c, http.StatusInternalServerError, "failed to delete track", err)
+		h.handleError(c, apperrors.NewDatabaseError("failed to delete track", err))
 		return
 	}
 
@@ -302,7 +368,7 @@ func (h *TrackHandler) ListTracks(c *gin.Context) {
 
 	tracks, err := h.trackRepo.List(c, map[string]interface{}{}, offset, limit)
 	if err != nil {
-		h.handleError(c, http.StatusInternalServerError, "failed to list tracks", err)
+		h.handleError(c, apperrors.NewDatabaseError("failed to list tracks", err))
 		return
 	}
 
@@ -333,62 +399,57 @@ func (h *TrackHandler) SearchTracks(c *gin.Context) {
 
 	var query SearchQuery
 	if err := c.ShouldBindJSON(&query); err != nil {
-		h.handleError(c, http.StatusBadRequest, "invalid search query", err)
+		h.handleError(c, apperrors.NewValidationError("invalid search query", err.Error()))
 		return
 	}
 
 	tracks, err := h.trackRepo.SearchByMetadata(c, query.toMap())
 	if err != nil {
-		h.handleError(c, http.StatusInternalServerError, "failed to search tracks", err)
+		h.handleError(c, apperrors.NewDatabaseError("failed to search tracks", err))
 		return
 	}
 
 	c.JSON(http.StatusOK, tracks)
 }
 
-// BatchProcess processes multiple tracks in batch
-// @Summary Process tracks in batch
-// @Description Process multiple tracks in batch mode
-// @Tags tracks
-// @Accept json
-// @Produce json
-// @Param request body BatchProcessRequest true "Batch process request"
-// @Success 200 {array} domain.Track
-// @Failure 400 {object} ErrorResponse
-// @Failure 500 {object} ErrorResponse
-// @Router /tracks/batch [post]
+// BatchProcess processes multiple tracks
 func (h *TrackHandler) BatchProcess(c *gin.Context) {
+	start := time.Now()
+	defer func() {
+		metrics.DatabaseOperationsTotal.WithLabelValues("batch", "total").Inc()
+		metrics.DatabaseQueryDuration.WithLabelValues("batch").Observe(time.Since(start).Seconds())
+	}()
+
 	var req BatchProcessRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		h.handleError(c, http.StatusBadRequest, "invalid request body", err)
+		h.handleError(c, apperrors.NewValidationError("invalid request body", err.Error()))
 		return
 	}
 
-	// Get tracks
 	var tracks []*domain.Track
 	for _, id := range req.TrackIDs {
 		track, err := h.trackRepo.GetByID(c, id)
 		if err != nil {
-			h.handleError(c, http.StatusInternalServerError, "failed to get track", err)
+			h.handleError(c, apperrors.NewDatabaseError("failed to get track", err))
 			return
 		}
-		if track != nil {
-			tracks = append(tracks, track)
+		if track == nil {
+			h.handleError(c, apperrors.NewNotFoundError(fmt.Sprintf("track not found: %s", id)))
+			return
 		}
+		tracks = append(tracks, track)
 	}
 
-	// Process tracks using AI service
+	// Process tracks in batch
 	if err := h.aiService.BatchProcess(c, tracks); err != nil {
-		h.handleError(c, http.StatusInternalServerError, "failed to process tracks", err)
+		h.handleError(c, apperrors.NewAIError("failed to process tracks", err))
 		return
 	}
 
-	// Update processed tracks
-	for _, track := range tracks {
-		if err := h.trackRepo.Update(c, track); err != nil {
-			h.handleError(c, http.StatusInternalServerError, "failed to update track", err)
-			return
-		}
+	// Update tracks in database
+	if err := h.trackRepo.BatchUpdate(c, tracks); err != nil {
+		h.handleError(c, apperrors.NewDatabaseError("failed to update tracks", err))
+		return
 	}
 
 	c.JSON(http.StatusOK, tracks)
@@ -408,7 +469,7 @@ func (h *TrackHandler) BatchProcess(c *gin.Context) {
 func (h *TrackHandler) ExportTracks(c *gin.Context) {
 	var req ExportRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		h.handleError(c, http.StatusBadRequest, "invalid request body", err)
+		h.handleError(c, apperrors.NewValidationError("invalid request body", err.Error()))
 		return
 	}
 
@@ -417,7 +478,7 @@ func (h *TrackHandler) ExportTracks(c *gin.Context) {
 	for _, id := range req.TrackIDs {
 		track, err := h.trackRepo.GetByID(c, id)
 		if err != nil {
-			h.handleError(c, http.StatusInternalServerError, "failed to get track", err)
+			h.handleError(c, apperrors.NewDatabaseError("failed to get track", err))
 			return
 		}
 		if track != nil {
@@ -448,7 +509,7 @@ func (h *TrackHandler) ExportTracks(c *gin.Context) {
 		}
 		exportData = csvData
 	default:
-		h.handleError(c, http.StatusBadRequest, "unsupported export format", nil)
+		h.handleError(c, apperrors.NewValidationError("unsupported export format", fmt.Sprintf("format '%s' is not supported", req.Format)))
 		return
 	}
 
@@ -508,10 +569,10 @@ func (q *SearchQuery) toMap() map[string]interface{} {
 		m["iswc"] = q.ISWC
 	}
 	if !q.CreatedFrom.IsZero() {
-		m["created_after"] = q.CreatedFrom
+		m["created_from"] = q.CreatedFrom
 	}
 	if !q.CreatedTo.IsZero() {
-		m["created_before"] = q.CreatedTo
+		m["created_to"] = q.CreatedTo
 	}
 	if q.NeedsReview != nil {
 		m["needs_review"] = *q.NeedsReview
@@ -519,27 +580,22 @@ func (q *SearchQuery) toMap() map[string]interface{} {
 	return m
 }
 
-func (h *TrackHandler) handleError(c *gin.Context, status int, message string, err error) {
-	if err != nil {
+func (h *TrackHandler) handleError(c *gin.Context, err *apperrors.AppError) {
+	if h.errorTracker != nil {
 		h.errorTracker.CaptureError(err, map[string]string{
-			"status":    strconv.Itoa(status),
-			"message":   message,
-			"path":      c.FullPath(),
-			"method":    c.Request.Method,
-			"client_ip": c.ClientIP(),
+			"handler": "track",
+			"method":  c.Request.Method,
+			"path":    c.Request.URL.Path,
 		})
 	}
 
-	metrics.DatabaseOperationsTotal.WithLabelValues(c.Request.Method, "error").Inc()
-
-	response := ErrorResponse{
-		Error: message,
-	}
-	if err != nil && status >= 500 {
-		response.Details = err.Error()
-	}
-
-	c.JSON(status, response)
+	c.JSON(err.StatusCode, gin.H{
+		"error": gin.H{
+			"type":    err.Type,
+			"message": err.Message,
+			"details": err.Details,
+		},
+	})
 }
 
 func validateTrack(track *domain.Track) error {
