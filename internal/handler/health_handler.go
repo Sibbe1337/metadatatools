@@ -1,25 +1,21 @@
 package handler
 
 import (
-	"context"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/redis/go-redis/v9"
-	"gorm.io/gorm"
+	"github.com/go-redis/redis/v8"
 )
 
 // HealthHandler handles health check requests
 type HealthHandler struct {
-	db    *gorm.DB
-	redis redis.UniversalClient
+	redis *redis.Client
 }
 
 // NewHealthHandler creates a new health check handler
-func NewHealthHandler(db *gorm.DB, redis redis.UniversalClient) *HealthHandler {
+func NewHealthHandler(redis *redis.Client) *HealthHandler {
 	return &HealthHandler{
-		db:    db,
 		redis: redis,
 	}
 }
@@ -34,55 +30,21 @@ type ServiceStatus struct {
 
 // HealthStatus represents the overall health check response
 type HealthStatus struct {
-	Status    string                   `json:"status"`
-	Timestamp string                   `json:"timestamp"`
-	Services  map[string]ServiceStatus `json:"services"`
+	Status   string                   `json:"status"`
+	Services map[string]ServiceStatus `json:"services"`
 }
 
-// Check handles the health check request
+// Check performs health checks on all services
 func (h *HealthHandler) Check(c *gin.Context) {
 	status := HealthStatus{
-		Status:    "healthy",
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-		Services:  make(map[string]ServiceStatus),
-	}
-
-	// Check database
-	dbStart := time.Now()
-	sqlDB, err := h.db.DB()
-	if err != nil {
-		status.Services["database"] = ServiceStatus{
-			Status:    "error",
-			Message:   "Failed to get database instance",
-			Latency:   time.Since(dbStart).Milliseconds(),
-			Timestamp: time.Now().UTC().Format(time.RFC3339),
-		}
-		status.Status = "degraded"
-	} else {
-		err = sqlDB.PingContext(c)
-		if err != nil {
-			status.Services["database"] = ServiceStatus{
-				Status:    "error",
-				Message:   "Failed to ping database",
-				Latency:   time.Since(dbStart).Milliseconds(),
-				Timestamp: time.Now().UTC().Format(time.RFC3339),
-			}
-			status.Status = "degraded"
-		} else {
-			status.Services["database"] = ServiceStatus{
-				Status:    "healthy",
-				Latency:   time.Since(dbStart).Milliseconds(),
-				Timestamp: time.Now().UTC().Format(time.RFC3339),
-			}
-		}
+		Status:   "healthy",
+		Services: make(map[string]ServiceStatus),
 	}
 
 	// Check Redis
+	redisCtx := c.Request.Context()
 	redisStart := time.Now()
-	redisCtx, cancel := context.WithTimeout(c, 5*time.Second)
-	defer cancel()
-
-	_, err = h.redis.Ping(redisCtx).Result()
+	_, err := h.redis.Ping(redisCtx).Result()
 	if err != nil {
 		status.Services["redis"] = ServiceStatus{
 			Status:    "error",

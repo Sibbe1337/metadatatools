@@ -1,0 +1,16 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  group_by: ['alertname', 'severity']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  receiver: 'default'
+
+receivers:
+  - name: 'default'
+    # You can configure email, Slack, or other notification channels here
+    # For now, we'll use a basic webhook configuration
+    webhook_configs:
+      - url: 'http://localhost:8080/webhook'  # Replace with your actual webhook URL 

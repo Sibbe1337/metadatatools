@@ -1,0 +1,83 @@
+groups:
+  - name: metadatatool_alerts
+    rules:
+      # High Error Rate Alert
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m])) 
+          / 
+          sum(rate(http_requests_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: High HTTP error rate
+          description: "Error rate is {{ $value | humanizePercentage }} over the last 5 minutes"
+
+      # Slow Response Time Alert
+      - alert: SlowResponseTime
+        expr: |
+          histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le)) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Slow response time
+          description: "95th percentile of response time is {{ $value | humanizeDuration }}"
+
+      # Database Connection Alert
+      - alert: HighDatabaseConnections
+        expr: database_connections{state="active"} > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: High number of database connections
+          description: "{{ $value }} active database connections"
+
+      # Cache Performance Alert
+      - alert: LowCacheHitRate
+        expr: |
+          sum(rate(cache_hits_total[5m])) 
+          / 
+          (sum(rate(cache_hits_total[5m])) + sum(rate(cache_misses_total[5m]))) < 0.7
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Low cache hit rate
+          description: "Cache hit rate is {{ $value | humanizePercentage }}"
+
+      # AI Service Performance Alert
+      - alert: HighAILatency
+        expr: |
+          histogram_quantile(0.95, sum(rate(ai_request_duration_seconds_bucket[5m])) by (le)) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: High AI service latency
+          description: "95th percentile of AI request latency is {{ $value | humanizeDuration }}"
+
+      # Track Processing Alert
+      - alert: HighTrackProcessingFailureRate
+        expr: |
+          sum(rate(tracks_processed_total{status="error"}[5m])) 
+          / 
+          sum(rate(tracks_processed_total[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: High track processing failure rate
+          description: "Track processing failure rate is {{ $value | humanizePercentage }}"
+
+      # Active Users Drop Alert
+      - alert: LowActiveUsers
+        expr: active_users < 10 and hour() > 9 and hour() < 18 and day_of_week() < 6
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Low number of active users
+          description: "Only {{ $value }} active users during business hours" 

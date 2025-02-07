@@ -28,20 +28,54 @@ The tool will enable users to:
 
 ### **2.1 Core Features**  
 
-#### **Metadata Extraction & Enrichment**  
-- Extract metadata fields from audio files:  
-  - **Title, Artist, Album, ISRC, ISWC, Release Year, Label, Publisher**  
-  - **BPM, Key, Mood, Genre (AI-generated where necessary)**  
-- AI-powered **metadata enrichment** for genre classification, mood tagging, and DSP optimization.  
+#### **Metadata Extraction & AI Processing**  
+- **Primary AI Model: Qwen2-Audio**
+  - Self-hosted solution for cost-effectiveness
+  - Real-time processing for Enterprise tier
+  - Confidence threshold: 80%
+  - Automatic fallback to OpenAI when needed
+  
+- **Fallback AI Model: OpenAI**
+  - Used when Qwen2 confidence < 80%
+  - Used during system degradation
+  - Cost-optimized usage patterns
+  
+- **A/B Testing Infrastructure**
+  - 90/10 traffic split for model comparison
+  - Real-time performance monitoring
+  - BigQuery analytics integration
+
+#### **Queue System (Google Pub/Sub)**
+- **High Priority Queue**
+  - Real-time processing (<1s latency)
+  - Enterprise tier requests
+  - Automatic scaling
+  
+- **Low Priority Queue**
+  - Batch processing (<10min processing)
+  - Free/Pro tier requests
+  - Cost-optimized processing
+
+#### **File Management & Retention**
+- **Tier-based Retention**
+  - Free Tier: 30 days
+  - Pro Tier: 6 months
+  - Enterprise: Custom retention policies
+  
+- **Cleanup Process**
+  - 7-day deletion notifications
+  - Extension options for Enterprise
+  - Temporary file management (24h)
 
 #### **API Integration**  
-- **GraphQL & REST API** for metadata retrieval, validation, and enrichment.  
-- OAuth2 authentication with JWT-based access control.  
+- **GraphQL & REST API** for metadata retrieval, validation, and enrichment.
+- OAuth2 authentication with JWT-based access control.
+- Rate limiting based on subscription tier.
 
 #### **Batch Processing & Editing**  
-- **Bulk metadata imports** with validation and enrichment.  
-- **CSV, JSON, XML exports** for DSP compatibility.  
-- **Pre-validation of metadata** against DDEX standards before submission.  
+- **Bulk metadata imports** with validation and enrichment.
+- **CSV, JSON, XML exports** for DSP compatibility.
+- **Pre-validation of metadata** against DDEX standards before submission.
 
 #### **User Authentication & Permissions**  
 - **Role-based access control (RBAC)**:  
@@ -56,19 +90,24 @@ The tool will enable users to:
 ### **3.1 Backend (Golang)**  
 - **Framework**: Go Fiber for high-performance HTTP handling.  
 - **Database**: PostgreSQL (with **partitioning for large-scale metadata storage**).  
+- **Queue System**: Google Pub/Sub for reliable message processing.
+- **Analytics**: BigQuery for A/B testing and performance analysis.
 - **Storage**: Cloud Storage (S3-compatible) for audio and metadata logs.  
 - **Authentication**: OAuth2 with JWT-based session management.  
 - **API Documentation**: OpenAPI (Swagger) for REST and GraphQL Playground for flexible queries.  
 
 #### **Metadata Processing Pipeline**  
-```
-[Upload] → [Cloud Storage] → [Golang API] → [PostgreSQL]
-                                  ↓
-                        [AI Processing Queue]
-                                  ↓
-                        [Metadata Enhancement]
-                                  ↓
-                        [DDEX Validation & Storage]
+```mermaid
+graph TD
+    A[Upload] --> B[Priority Router]
+    B -->|High Priority| C[Real-time Queue]
+    B -->|Low Priority| D[Batch Queue]
+    C --> E[Qwen2-Audio]
+    D --> E
+    E -->|Confidence < 80%| F[OpenAI Fallback]
+    E -->|Success| G[Metadata Storage]
+    F --> G
+    E -->|Failure x3| H[Dead Letter Queue]
 ```
 
 ---
@@ -85,10 +124,21 @@ The tool will enable users to:
 ## **4. AI Model Integration & Scaling**  
 
 ### **4.1 AI-Powered Metadata Processing**  
-- **Real-time AI analysis** for premium users; batch processing for standard users.  
-- **Custom AI models** replace OpenAI API when cost exceeds **$10K/month**.  
-- **Confidence Scoring**: Metadata flagged for human review if confidence < 85%.  
-- **Model Versioning**: `model_v1`, `model_v2` with A/B testing for continuous improvement.  
+- **Primary Model: Qwen2-Audio**
+  - Self-hosted for cost optimization
+  - Real-time processing capability
+  - Confidence threshold: 80%
+  
+- **Fallback Model: OpenAI**
+  - Used when Qwen2 confidence < 80%
+  - Cost-optimized usage patterns
+  - Automatic failover support
+
+### **4.2 A/B Testing & Optimization**
+- 90/10 traffic split between models
+- Real-time performance monitoring
+- BigQuery analytics integration
+- Automatic model selection based on performance
 
 ---
 
@@ -126,48 +176,56 @@ The tool will enable users to:
 
 ---
 
-## **7. Monetization Strategy**  
+## **7. Monitoring & Observability**
 
-### **7.1 Subscription Plans**  
-- **Free Tier**: 10 tracks/month, manual editing only.  
-- **Pro Plan ($19/month)**: 100 tracks/month, AI metadata enhancement, batch processing.  
-- **Enterprise Plan ($99+/month)**: Unlimited tracks, API access, priority support.  
+### **7.1 Metrics & Dashboards**
+- **AI Processing Metrics**
+  - Response time by model
+  - Confidence score distribution
+  - Error rates and types
+  - Cost per request
+  
+- **Queue Metrics**
+  - Queue size by priority
+  - Processing time
+  - Error rates
+  - DLQ statistics
 
-### **7.2 API Pricing**  
-- **Pay-as-you-go**: $0.01 per API request.  
-- **Volume discounts & enterprise licensing** for large users.  
+### **7.2 Alerting**
+- **AI Processing Alerts**
+  - Confidence score < 70% for >20% of requests
+  - Processing time > SLA
+  - Error rate > 5%
+  
+- **Queue Alerts**
+  - Queue size > 500 pending jobs
+  - DLQ size > 100 messages
+  - Processing delay > 10 minutes
 
 ---
 
-## **8. Monitoring & Cost Optimization**  
+## **8. Deployment & CI/CD**  
 
-### **8.1 Observability & Performance Metrics**  
-- **SLOs**:  
-  - API response time: **p99 < 200ms**  
-  - AI processing latency: **real-time < 1s**, **batch < 10 min**  
-  - DDEX ingestion success rate: **99.9% within 5 min**  
-- **Cloud Billing API tracks per-feature costs**.  
+### **8.1 Cloud Infrastructure (Google Cloud Platform)**  
+- **Compute**: Cloud Run for queue processors, Cloud Functions for cleanup
+- **Queue**: Pub/Sub for reliable message processing
+- **Storage**: Cloud Storage, Cloud SQL, Redis
+- **Analytics**: BigQuery for A/B testing
+- **Security**: Cloud IAM, Secret Manager
 
----
-
-## **9. Deployment & CI/CD**  
-
-### **9.1 Cloud Infrastructure (Google Cloud Platform)**  
-- **Compute**: Cloud Run (API), Cloud Functions (AI processing), GKE (scalable workloads).  
-- **Storage**: Cloud SQL (PostgreSQL), Firestore (real-time metadata sync).  
-- **Security**: Cloud IAM, Secret Manager, Cloud KMS.  
-
-### **9.2 CI/CD Pipeline**  
+### **8.2 CI/CD Pipeline**  
 - **Cloud Build** for automated testing & deployment.  
 - **Artifact Registry** for managing Docker containers.  
 - **Staging & Production environments** with feature flags for safe rollouts.  
 
 ---
 
-## **10. Future Enhancements**  
+## **9. Future Enhancements**  
 
-- **DSP direct integration** with Spotify, Apple Music, Amazon Music.  
-- **Blockchain metadata verification for rights management**.  
-- **Machine Learning for metadata prediction & trend analysis**.  
-- **Multi-region deployment for lower latency and failover handling**.  
+- **Multi-region AI Processing**
+- **Enhanced A/B Testing Framework**
+- **Custom Model Training Pipeline**
+- **Advanced Batch Processing**
+- **Global Load Balancing**
+- **Cross-region Replication**
 

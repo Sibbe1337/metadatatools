@@ -22,6 +22,12 @@ type Track struct {
 	BPM       float64 `json:"bpm,omitempty"`
 	Key       string  `json:"key,omitempty"`
 	Mood      string  `json:"mood,omitempty"`
+	Publisher string  `json:"publisher,omitempty"`
+
+	// Audio data
+	AudioData   []byte `json:"-"`
+	AudioFormat string `json:"audio_format,omitempty"`
+	FileSize    int64  `json:"file_size,omitempty"`
 
 	// AI-related fields
 	AITags       []string `json:"ai_tags,omitempty"`
@@ -29,9 +35,13 @@ type Track struct {
 	ModelVersion string   `json:"model_version,omitempty"`
 	NeedsReview  bool     `json:"needs_review,omitempty"`
 
-	Metadata  Metadata  `json:"metadata"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	// AI-generated metadata
+	AIMetadata *AIMetadata `json:"ai_metadata,omitempty"`
+
+	Metadata  Metadata   `json:"metadata"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 }
 
 // Metadata represents additional track metadata

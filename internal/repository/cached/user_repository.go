@@ -7,7 +7,7 @@ import (
 	"metadatatool/internal/pkg/domain"
 	"time"
 
-	"github.com/redis/go-redis/v9"
+	"github.com/go-redis/redis/v8"
 )
 
 const (
@@ -17,14 +17,14 @@ const (
 
 // CachedUserRepository implements domain.UserRepository with Redis caching
 type CachedUserRepository struct {
-	redis    *redis.Client
+	client   *redis.Client
 	delegate domain.UserRepository
 }
 
-// NewUserRepository creates a new CachedUserRepository
-func NewUserRepository(redis *redis.Client, delegate domain.UserRepository) *CachedUserRepository {
+// NewUserRepository creates a new cached user repository
+func NewUserRepository(client *redis.Client, delegate domain.UserRepository) domain.UserRepository {
 	return &CachedUserRepository{
-		redis:    redis,
+		client:   client,
 		delegate: delegate,
 	}
 }
@@ -132,7 +132,7 @@ func (r *CachedUserRepository) List(ctx context.Context, offset, limit int) ([]*
 // Helper functions for cache operations
 
 func (r *CachedUserRepository) getFromCache(ctx context.Context, key string) (*domain.User, error) {
-	data, err := r.redis.Get(ctx, key).Bytes()
+	data, err := r.client.Get(ctx, key).Bytes()
 	if err != nil {
 		if err == redis.Nil {
 			return nil, nil
@@ -153,7 +153,7 @@ func (r *CachedUserRepository) setCache(ctx context.Context, key string, user *d
 	if err != nil {
 		return err
 	}
-	return r.redis.Set(ctx, key, data, userTTL).Err()
+	return r.client.Set(ctx, key, data, userTTL).Err()
 }
 
 func (r *CachedUserRepository) invalidateCache(ctx context.Context, user *domain.User) {
@@ -162,5 +162,5 @@ func (r *CachedUserRepository) invalidateCache(ctx context.Context, user *domain
 		fmt.Sprintf("%s:email:%s", userKeyPrefix, user.Email),
 		fmt.Sprintf("%s:apikey:%s", userKeyPrefix, user.APIKey),
 	}
-	r.redis.Del(ctx, keys...)
+	r.client.Del(ctx, keys...)
 }

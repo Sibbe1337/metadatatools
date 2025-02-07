@@ -1,0 +1,193 @@
+scalar DateTime
+scalar Upload
+
+type Track {
+  id: ID!
+  title: String!
+  artist: String!
+  album: String
+  genre: String
+  duration: Float
+  filePath: String
+  year: Int
+  label: String
+  territory: String
+  isrc: String
+  iswc: String
+  bpm: Float
+  key: String
+  mood: String
+  publisher: String
+
+  # Audio metadata
+  audioFormat: String
+  fileSize: Int
+
+  # AI-related fields
+  aiTags: [String!]
+  aiConfidence: Float
+  modelVersion: String
+  needsReview: Boolean
+  aiMetadata: AIMetadata
+
+  # Base metadata
+  metadata: Metadata
+  createdAt: DateTime!
+  updatedAt: DateTime!
+  deletedAt: DateTime
+}
+
+type AIMetadata {
+  provider: String!
+  energy: Float
+  danceability: Float
+  processedAt: DateTime!
+  processingMs: Int!
+  needsReview: Boolean!
+  reviewReason: String
+}
+
+type Metadata {
+  isrc: String
+  iswc: String
+  bpm: Float
+  key: String
+  mood: String
+  labels: [String!]
+  aiTags: [String!]
+  confidence: Float
+  modelVersion: String
+  customFields: JSON
+}
+
+type TrackConnection {
+  edges: [TrackEdge!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+type TrackEdge {
+  node: Track!
+  cursor: String!
+}
+
+type PageInfo {
+  hasNextPage: Boolean!
+  hasPreviousPage: Boolean!
+  startCursor: String
+  endCursor: String
+}
+
+input CreateTrackInput {
+  title: String!
+  artist: String!
+  album: String
+  genre: String
+  year: Int
+  label: String
+  territory: String
+  isrc: String
+  iswc: String
+  audioFile: Upload
+}
+
+input UpdateTrackInput {
+  id: ID!
+  title: String
+  artist: String
+  album: String
+  genre: String
+  year: Int
+  label: String
+  territory: String
+  isrc: String
+  iswc: String
+  metadata: MetadataInput
+}
+
+input MetadataInput {
+  isrc: String
+  iswc: String
+  bpm: Float
+  key: String
+  mood: String
+  labels: [String!]
+  customFields: JSON
+}
+
+input TrackFilter {
+  title: String
+  artist: String
+  album: String
+  genre: String
+  label: String
+  isrc: String
+  iswc: String
+  needsReview: Boolean
+  createdFrom: DateTime
+  createdTo: DateTime
+}
+
+type BatchResult {
+  successCount: Int!
+  failureCount: Int!
+  errors: [BatchError!]
+}
+
+type BatchError {
+  trackId: ID
+  message: String!
+  code: String!
+}
+
+type Query {
+  # Get a single track by ID
+  track(id: ID!): Track
+
+  # List tracks with pagination and filtering
+  tracks(
+    first: Int
+    after: String
+    filter: TrackFilter
+    orderBy: String
+  ): TrackConnection!
+
+  # Search tracks by metadata
+  searchTracks(query: String!): [Track!]!
+
+  # Get tracks that need review
+  tracksNeedingReview(first: Int, after: String): TrackConnection!
+}
+
+type Mutation {
+  # Create a new track
+  createTrack(input: CreateTrackInput!): Track!
+
+  # Update an existing track
+  updateTrack(input: UpdateTrackInput!): Track!
+
+  # Delete a track
+  deleteTrack(id: ID!): Boolean!
+
+  # Batch process tracks
+  batchProcessTracks(ids: [ID!]!): BatchResult!
+
+  # Enrich track metadata using AI
+  enrichTrackMetadata(id: ID!): Track!
+
+  # Validate track metadata
+  validateTrackMetadata(id: ID!): BatchResult!
+
+  # Export tracks to DDEX
+  exportToDDEX(ids: [ID!]!): String!
+}
+
+type Subscription {
+  # Subscribe to track updates
+  trackUpdated(id: ID!): Track!
+
+  # Subscribe to batch processing progress
+  batchProcessingProgress(batchId: ID!): BatchResult!
+}
+
+scalar JSON 

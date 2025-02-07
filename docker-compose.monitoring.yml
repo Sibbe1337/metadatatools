@@ -33,6 +33,32 @@ services:
       - monitoring
     restart: unless-stopped
 
+  grafana:
+    image: grafana/grafana:10.1.0
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin  # Change this in production
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_DASHBOARDS_MIN_REFRESH_INTERVAL=5s
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+      - SENTRY_DSN=your-sentry-project-dsn
+      - SENTRY_ENVIRONMENT=development
+      - SENTRY_DEBUG=false
+      - SENTRY_SAMPLE_RATE=1.0
+      - SENTRY_TRACES_SAMPLE_RATE=0.2
+    networks:
+      - monitoring
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+
   node-exporter:
     image: prom/node-exporter:v1.6.1
     container_name: node-exporter
@@ -75,29 +101,6 @@ services:
       - app
     restart: unless-stopped
 
-  grafana:
-    image: grafana/grafana:10.1.0
-    container_name: grafana
-    ports:
-      - "3000:3000"
-    volumes:
-      - ./monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources
-      - ./monitoring/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards
-      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards
-      - grafana_data:/var/lib/grafana
-    environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin  # Change this in production
-      - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_DASHBOARDS_MIN_REFRESH_INTERVAL=5s
-      - GF_AUTH_ANONYMOUS_ENABLED=false
-      - GF_INSTALL_PLUGINS=grafana-piechart-panel
-    networks:
-      - monitoring
-    restart: unless-stopped
-    depends_on:
-      - prometheus
-
 networks:
   monitoring:
     driver: bridge
@@ -106,11 +109,4 @@ networks:
 
 volumes:
   prometheus_data:
-  grafana_data:
-
-environment:
-  SENTRY_DSN: your-sentry-project-dsn
-  SENTRY_ENVIRONMENT: development
-  SENTRY_DEBUG: false
-  SENTRY_SAMPLE_RATE: 1.0
-  SENTRY_TRACES_SAMPLE_RATE: 0.2 
+  grafana_data: 

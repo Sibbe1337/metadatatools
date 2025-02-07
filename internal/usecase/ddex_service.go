@@ -91,21 +91,17 @@ func (s *ddexService) ExportTracks(ctx context.Context, tracks []*domain.Track) 
 }
 
 // createERNMessage creates a DDEX ERN 4.3 message from tracks
-func (s *ddexService) createERNMessage(tracks []*domain.Track) *domain.DDEXERN43Message {
+func (s *ddexService) createERNMessage(tracks []*domain.Track) *domain.ERNMessage {
 	messageId := uuid.New().String()
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	// Create message
-	message := &domain.DDEXERN43Message{
-		XMLNs:                  "http://ddex.net/xml/ern/43",
-		XMLNsErn:               "http://ddex.net/xml/ern/43",
-		MessageSchemaVersionId: "ern/43",
+	message := &domain.ERNMessage{
 		MessageHeader: domain.MessageHeader{
-			MessageID:          messageId,
-			MessageSender:      "MetadataTool",
-			MessageRecipient:   "DSP",
-			MessageCreatedDate: now,
-			MessageControlType: "LiveMessage",
+			MessageID:              messageId,
+			MessageSender:          "MetadataTool",
+			MessageRecipient:       "DSP",
+			MessageCreatedDateTime: now,
 		},
 	}
 
@@ -113,9 +109,7 @@ func (s *ddexService) createERNMessage(tracks []*domain.Track) *domain.DDEXERN43
 	var soundRecordings []domain.SoundRecording
 	for _, track := range tracks {
 		soundRecording := domain.SoundRecording{
-			ResourceId: domain.ResourceId{
-				ISRC: track.ISRC,
-			},
+			ISRC: track.ISRC,
 			Title: domain.Title{
 				TitleText: track.Title,
 			},
@@ -139,7 +133,7 @@ func (s *ddexService) createERNMessage(tracks []*domain.Track) *domain.DDEXERN43
 	var releases []domain.Release
 	for _, track := range tracks {
 		release := domain.Release{
-			ReleaseId: domain.ReleaseId{
+			ReleaseID: domain.ReleaseID{
 				ICPN: track.ID, // Use track ID as ICPN for now
 			},
 			ReferenceTitle: domain.Title{

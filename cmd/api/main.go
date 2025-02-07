@@ -2,15 +2,18 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
+	"log"
 	"metadatatool/internal/config"
 	"metadatatool/internal/handler"
-	"metadatatool/internal/pkg/database"
 	"metadatatool/internal/pkg/domain"
 	"metadatatool/internal/pkg/errortracking"
 	"metadatatool/internal/pkg/logger"
+	"metadatatool/internal/pkg/middleware"
 	"metadatatool/internal/pkg/storage"
+	"metadatatool/internal/repository/base"
 	"metadatatool/internal/repository/cached"
-	"metadatatool/internal/repository/postgres"
 	"metadatatool/internal/usecase"
 	"net/http"
 	"os"
@@ -19,104 +22,141 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/redis/go-redis/v9"
+	"github.com/go-redis/redis/v8"
+	_ "github.com/lib/pq"
 )
 
 func main() {
 	// Load configuration
-	cfg := config.LoadConfig()
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
 
 	// Initialize logger
 	log := logger.NewLogger()
 
 	// Initialize error tracking
-	errortracker := errortracking.NewErrorTracker()
-	defer errortracker.Close()
+	errorTracker := errortracking.NewErrorTracker()
 
-	// Connect to PostgreSQL
-	db, err := database.ConnectPostgres()
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// Connect to Redis
+	// Initialize Redis client
 	redisClient := redis.NewClient(&redis.Options{
-		Addr:     cfg.Redis.Host + ":" + cfg.Redis.Port,
+		Addr:     fmt.Sprintf("%s:%d", cfg.Redis.Host, cfg.Redis.Port),
 		Password: cfg.Redis.Password,
 		DB:       cfg.Redis.DB,
 	})
-	defer redisClient.Close()
+
+	// Initialize PostgreSQL connection
+	dbDSN := fmt.Sprintf(
+		"host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
+		cfg.Database.Host, cfg.Database.Port, cfg.Database.User,
+		cfg.Database.Password, cfg.Database.DBName,
+	)
+	db, err := sql.Open("postgres", dbDSN)
+	if err != nil {
+		log.Fatalf("Failed to connect to database: %v", err)
+	}
+	defer db.Close()
+
+	// Test database connection
+	if err := db.Ping(); err != nil {
+		log.Fatalf("Failed to ping database: %v", err)
+	}
 
 	// Initialize repositories
-	var trackRepo domain.TrackRepository = postgres.NewPostgresTrackRepository(db)
-	var userRepo domain.UserRepository = postgres.NewUserRepository(db)
+	baseTrackRepo := base.NewTrackRepository(db)
+	trackRepo := cached.NewTrackRepository(redisClient, baseTrackRepo)
+	baseUserRepo := base.NewUserRepository(db)
+	userRepo := cached.NewUserRepository(redisClient, baseUserRepo)
 
-	// Add caching layer if needed
-	if cfg.Redis.Enabled {
-		trackRepo = cached.NewTrackRepository(redisClient, trackRepo)
-		userRepo = cached.NewUserRepository(redisClient, userRepo)
+	// Initialize services
+	authService := usecase.NewAuthService(&cfg.Auth, userRepo)
+	storageService, err := storage.NewStorageService(cfg.Storage)
+	if err != nil {
+		log.Fatalf("Failed to initialize storage service: %v", err)
 	}
 
-	// Initialize storage
-	storageClient := storage.NewStorageClient(&cfg.Storage)
-
-	// Initialize services with configurations
-	authService := usecase.NewAuthService(&cfg.Auth, userRepo)
-	audioService := usecase.NewAudioService(storageClient, trackRepo)
+	// Initialize AI service
 	aiService, err := usecase.NewOpenAIService(&cfg.AI)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Failed to initialize AI service: %v", err)
 	}
-	ddexService := usecase.NewDDEXService()
 
 	// Initialize handlers
+	healthHandler := handler.NewHealthHandler(redisClient)
 	authHandler := handler.NewAuthHandler(authService, userRepo)
-	trackHandler := handler.NewTrackHandler(trackRepo, aiService)
-	audioHandler := handler.NewAudioHandler(audioService)
-	ddexHandler := handler.NewDDEXHandler(ddexService, trackRepo)
-	healthHandler := handler.NewHealthHandler(db, redisClient)
+	trackHandler := handler.NewTrackHandler(trackRepo, aiService, errorTracker, cfg.Storage.Bucket)
+	audioHandler := handler.NewAudioHandler(storageService, trackRepo)
+	ddexHandler := handler.NewDDEXHandler(trackRepo)
+	metricsHandler := handler.NewMetricsHandler()
 
-	// Initialize Gin router
-	if cfg.Server.Environment == "production" {
-		gin.SetMode(gin.ReleaseMode)
-	}
-	router := gin.Default()
-
-	// Add middleware
+	// Initialize router
+	router := gin.New()
 	router.Use(gin.Recovery())
-	router.Use(gin.Logger())
 
 	// Initialize routes
-	initRoutes(router, healthHandler, authHandler, trackHandler, audioHandler, ddexHandler)
+	initRoutes(
+		router,
+		healthHandler,
+		authHandler,
+		trackHandler,
+		audioHandler,
+		ddexHandler,
+		metricsHandler,
+		authService,
+		userRepo,
+		redisClient,
+	)
 
 	// Start server
 	srv := &http.Server{
-		Addr:    ":" + cfg.Server.Port,
+		Addr:    fmt.Sprintf(":%d", cfg.Server.Port),
 		Handler: router,
 	}
 
 	// Graceful shutdown
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("listen: %s\n", err)
+			log.Fatalf("Failed to start server: %v", err)
 		}
 	}()
 
+	// Wait for interrupt signal
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
-	log.Info("Shutting down server...")
 
+	// Shutdown server
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := srv.Shutdown(ctx); err != nil {
-		log.Fatal("Server forced to shutdown:", err)
-	}
 
-	log.Info("Server exiting")
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Fatalf("Server forced to shutdown: %v", err)
+	}
 }
 
-func initRoutes(router *gin.Engine, healthHandler *handler.HealthHandler, authHandler *handler.AuthHandler, trackHandler *handler.TrackHandler, audioHandler *handler.AudioHandler, ddexHandler *handler.DDEXHandler) {
+func initRoutes(
+	router *gin.Engine,
+	healthHandler *handler.HealthHandler,
+	authHandler *handler.AuthHandler,
+	trackHandler *handler.TrackHandler,
+	audioHandler *handler.AudioHandler,
+	ddexHandler *handler.DDEXHandler,
+	metricsHandler *handler.MetricsHandler,
+	authService domain.AuthService,
+	userRepo domain.UserRepository,
+	redisClient *redis.Client,
+) {
+	// Add metrics middleware to all routes
+	router.Use(middleware.MetricsMiddleware())
+	router.Use(middleware.DatabaseMetricsMiddleware())
+	router.Use(middleware.AIMetricsMiddleware())
+	router.Use(middleware.CacheMetricsMiddleware())
+
+	// Metrics endpoints
+	router.GET("/metrics", metricsHandler.PrometheusHandler())
+	router.GET("/health", metricsHandler.HealthCheck)
+
 	// Health check
 	router.GET("/health", healthHandler.Check)
 
@@ -130,35 +170,58 @@ func initRoutes(router *gin.Engine, healthHandler *handler.HealthHandler, authHa
 
 	// Protected routes
 	api := router.Group("/api/v1")
+	api.Use(middleware.APIKeyAuth(userRepo))
+
+	// Configure rate limiting
+	rateLimitCfg := middleware.RateLimitConfig{
+		RequestsPerMinute: 60, // Adjust based on your needs
+		BurstSize:         10,
+		RedisClient:       redisClient,
+	}
+
+	// Track routes with rate limiting
+	tracks := api.Group("/tracks")
+	tracks.Use(middleware.RateLimit(rateLimitCfg))
 	{
-		// User routes
-		api.POST("/api-key", authHandler.GenerateAPIKey)
+		// Public endpoints (still rate limited)
+		tracks.GET("", trackHandler.ListTracks)
+		tracks.GET("/:id", trackHandler.GetTrack)
 
-		// Track routes
-		tracks := api.Group("/tracks")
+		// Protected endpoints (require authentication)
+		authenticated := tracks.Group("")
+		authenticated.Use(middleware.AuthMiddleware(authService))
 		{
-			tracks.POST("", trackHandler.CreateTrack)
-			tracks.GET("/:id", trackHandler.GetTrack)
-			tracks.PUT("/:id", trackHandler.UpdateTrack)
-			tracks.DELETE("/:id", trackHandler.DeleteTrack)
-			tracks.GET("", trackHandler.ListTracks)
-			tracks.POST("/enrich", trackHandler.EnrichTrack)
-			tracks.POST("/validate", trackHandler.ValidateTrack)
+			authenticated.POST("", trackHandler.CreateTrack)
+			authenticated.PUT("/:id", trackHandler.UpdateTrack)
+			authenticated.DELETE("/:id", trackHandler.DeleteTrack)
 		}
 
-		// Audio routes
-		audio := api.Group("/audio")
+		// Admin-only endpoints
+		admin := authenticated.Group("")
+		admin.Use(middleware.RoleGuard(domain.RoleAdmin))
 		{
-			audio.POST("/upload", audioHandler.UploadAudio)
-			audio.GET("/:id", audioHandler.GetAudioURL)
+			admin.POST("/batch", trackHandler.BatchProcess)
+			admin.POST("/export", trackHandler.ExportTracks)
 		}
+	}
 
-		// DDEX routes
-		ddex := api.Group("/ddex")
-		{
-			ddex.POST("/validate", ddexHandler.ValidateTrackDDEX)
-			ddex.GET("/:id", ddexHandler.ExportTrackDDEX)
-			ddex.POST("/batch", ddexHandler.BatchExportDDEX)
-		}
+	// Audio routes
+	audio := api.Group("/audio")
+	audio.Use(middleware.RateLimit(rateLimitCfg))
+	audio.Use(middleware.AuthMiddleware(authService))
+	{
+		audio.POST("/upload", audioHandler.UploadAudio)
+		audio.GET("/:id", audioHandler.GetAudioURL)
+	}
+
+	// DDEX routes (admin only)
+	ddex := api.Group("/ddex")
+	ddex.Use(middleware.RateLimit(rateLimitCfg))
+	ddex.Use(middleware.AuthMiddleware(authService))
+	ddex.Use(middleware.RoleGuard(domain.RoleAdmin))
+	{
+		ddex.POST("/validate", ddexHandler.ValidateERN)
+		ddex.POST("/import", ddexHandler.ImportERN)
+		ddex.POST("/export", ddexHandler.ExportERN)
 	}
 }

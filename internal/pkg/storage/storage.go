@@ -3,8 +3,12 @@ package storage
 import (
 	"context"
 	"fmt"
+	"io"
 	"metadatatool/internal/config"
 	"metadatatool/internal/pkg/domain"
+	"metadatatool/internal/pkg/metrics"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -13,123 +17,261 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-// S3Client implements the domain.StorageService interface
-type S3Client struct {
+type StorageService struct {
 	client *s3.Client
 	bucket string
+	cfg    *config.StorageConfig
 }
 
-// NewStorageClient creates a new S3 storage client
-func NewStorageClient(cfg *config.StorageConfig) domain.StorageService {
-	// Load AWS configuration
-	opts := []func(*awsconfig.LoadOptions) error{
+// NewStorageService creates a new storage service
+func NewStorageService(cfg config.StorageConfig) (domain.StorageService, error) {
+	// Create AWS config
+	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
 		awsconfig.WithRegion(cfg.Region),
 		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
 			cfg.AccessKey,
 			cfg.SecretKey,
 			"",
 		)),
-	}
-
-	// Add custom endpoint if specified
-	if cfg.Endpoint != "" {
-		customResolver := aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-			return aws.Endpoint{
-				URL:               cfg.Endpoint,
-				SigningRegion:     cfg.Region,
-				HostnameImmutable: true,
-			}, nil
-		})
-		opts = append(opts, awsconfig.WithEndpointResolverWithOptions(customResolver))
-	}
-
-	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(), opts...)
+	)
 	if err != nil {
-		fmt.Printf("Unable to load SDK config: %v\n", err)
-		return nil
+		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
+	// Create S3 client
 	client := s3.NewFromConfig(awsCfg)
 
-	return &S3Client{
+	return &StorageService{
 		client: client,
 		bucket: cfg.Bucket,
-	}
-}
-
-// Upload stores a file in S3
-func (c *S3Client) Upload(ctx context.Context, file *domain.File) error {
-	_, err := c.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:      aws.String(c.bucket),
-		Key:         aws.String(file.Key),
-		Body:        file.Content,
-		ContentType: aws.String(file.ContentType),
-		Metadata:    file.Metadata,
-	})
-	return err
-}
-
-// Download retrieves a file from S3
-func (c *S3Client) Download(ctx context.Context, key string) (*domain.File, error) {
-	result, err := c.client.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(c.bucket),
-		Key:    aws.String(key),
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return &domain.File{
-		Key:         key,
-		Content:     result.Body,
-		Size:        aws.ToInt64(result.ContentLength),
-		ContentType: aws.ToString(result.ContentType),
-		Metadata:    result.Metadata,
-		UploadedAt:  aws.ToTime(result.LastModified),
+		cfg:    &cfg,
 	}, nil
 }
 
-// Delete removes a file from S3
-func (c *S3Client) Delete(ctx context.Context, key string) error {
-	_, err := c.client.DeleteObject(ctx, &s3.DeleteObjectInput{
-		Bucket: aws.String(c.bucket),
+// Upload uploads a file to storage
+func (s *StorageService) Upload(ctx context.Context, key string, data io.Reader) error {
+	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
+		Body:   data,
 	})
-	return err
+	if err != nil {
+		return fmt.Errorf("failed to upload file: %w", err)
+	}
+	return nil
 }
 
-// GetSignedURL generates a pre-signed URL for direct upload/download
-func (c *S3Client) GetSignedURL(ctx context.Context, key string, operation domain.SignedURLOperation, expiry time.Duration) (string, error) {
-	presignClient := s3.NewPresignClient(c.client)
+// Download downloads a file from storage
+func (s *StorageService) Download(ctx context.Context, key string) (io.ReadCloser, error) {
+	result, err := s.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to download file: %w", err)
+	}
+	return result.Body, nil
+}
+
+// Delete deletes a file from storage
+func (s *StorageService) Delete(ctx context.Context, key string) error {
+	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to delete file: %w", err)
+	}
+	return nil
+}
+
+// GetSignedURL generates a pre-signed URL for a file
+func (s *StorageService) GetSignedURL(ctx context.Context, key string, operation domain.SignedURLOperation, expiry time.Duration) (string, error) {
+	var presignClient *s3.PresignClient
+	presignClient = s3.NewPresignClient(s.client)
+
+	var presignedURL string
+	var err error
 
 	switch operation {
-	case domain.SignedURLDownload:
-		request, err := presignClient.PresignGetObject(ctx,
-			&s3.GetObjectInput{
-				Bucket: aws.String(c.bucket),
-				Key:    aws.String(key),
-			},
-			s3.WithPresignExpires(expiry),
-		)
-		if err != nil {
-			return "", err
-		}
-		return request.URL, nil
-
 	case domain.SignedURLUpload:
-		request, err := presignClient.PresignPutObject(ctx,
-			&s3.PutObjectInput{
-				Bucket: aws.String(c.bucket),
-				Key:    aws.String(key),
-			},
-			s3.WithPresignExpires(expiry),
-		)
+		req, err := presignClient.PresignPutObject(ctx, &s3.PutObjectInput{
+			Bucket: aws.String(s.bucket),
+			Key:    aws.String(key),
+		}, s3.WithPresignExpires(expiry))
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("failed to generate upload URL: %w", err)
 		}
-		return request.URL, nil
+		presignedURL = req.URL
+
+	case domain.SignedURLDownload:
+		req, err := presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
+			Bucket: aws.String(s.bucket),
+			Key:    aws.String(key),
+		}, s3.WithPresignExpires(expiry))
+		if err != nil {
+			return "", fmt.Errorf("failed to generate download URL: %w", err)
+		}
+		presignedURL = req.URL
 
 	default:
-		return "", fmt.Errorf("unsupported operation: %s", operation)
+		return "", fmt.Errorf("unsupported signed URL operation: %v", operation)
 	}
+
+	return presignedURL, err
+}
+
+// GetMetadata gets metadata for a file
+func (s *StorageService) GetMetadata(ctx context.Context, key string) (*domain.FileMetadata, error) {
+	result, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get file metadata: %w", err)
+	}
+
+	return &domain.FileMetadata{
+		Key:          key,
+		Size:         aws.ToInt64(result.ContentLength),
+		ContentType:  aws.ToString(result.ContentType),
+		LastModified: *result.LastModified,
+		ETag:         aws.ToString(result.ETag),
+		StorageClass: string(result.StorageClass),
+	}, nil
+}
+
+// ListFiles lists files with the given prefix
+func (s *StorageService) ListFiles(ctx context.Context, prefix string) ([]*domain.FileMetadata, error) {
+	var files []*domain.FileMetadata
+
+	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(s.bucket),
+		Prefix: aws.String(prefix),
+	})
+
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list files: %w", err)
+		}
+
+		for _, obj := range page.Contents {
+			files = append(files, &domain.FileMetadata{
+				Key:          aws.ToString(obj.Key),
+				Size:         aws.ToInt64(obj.Size),
+				LastModified: *obj.LastModified,
+				ETag:         aws.ToString(obj.ETag),
+				StorageClass: string(obj.StorageClass),
+			})
+		}
+	}
+
+	return files, nil
+}
+
+// GetQuotaUsage gets the total storage usage for a user
+func (s *StorageService) GetQuotaUsage(ctx context.Context, userID string) (int64, error) {
+	var totalSize int64
+
+	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(s.bucket),
+		Prefix: aws.String(fmt.Sprintf("users/%s/", userID)),
+	})
+
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return 0, fmt.Errorf("failed to get quota usage: %w", err)
+		}
+
+		for _, obj := range page.Contents {
+			totalSize += aws.ToInt64(obj.Size)
+		}
+	}
+
+	return totalSize, nil
+}
+
+// ValidateUpload validates a file upload request
+func (s *StorageService) ValidateUpload(ctx context.Context, filename string, size int64, userID string) error {
+	// Check file size
+	if size > s.cfg.MaxFileSize {
+		return &domain.StorageError{
+			Code:    "FILE_TOO_LARGE",
+			Message: fmt.Sprintf("file size %d exceeds maximum allowed size %d", size, s.cfg.MaxFileSize),
+			Op:      "ValidateUpload",
+		}
+	}
+
+	// Check file type
+	ext := strings.ToLower(filepath.Ext(filename))
+	allowed := false
+	for _, allowedType := range s.cfg.AllowedFileTypes {
+		if ext == allowedType {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return &domain.StorageError{
+			Code:    "INVALID_FILE_TYPE",
+			Message: fmt.Sprintf("file type %s is not allowed", ext),
+			Op:      "ValidateUpload",
+		}
+	}
+
+	// Check user quota if userID is provided
+	if userID != "" {
+		usage, err := s.GetQuotaUsage(ctx, userID)
+		if err != nil {
+			return fmt.Errorf("failed to check quota: %w", err)
+		}
+
+		if usage+size > s.cfg.UserQuota {
+			return &domain.StorageError{
+				Code:    "QUOTA_EXCEEDED",
+				Message: "user storage quota exceeded",
+				Op:      "ValidateUpload",
+			}
+		}
+	}
+
+	return nil
+}
+
+// CleanupTempFiles removes expired temporary files
+func (s *StorageService) CleanupTempFiles(ctx context.Context) error {
+	timer := metrics.NewTimer(metrics.StorageOperationDuration.WithLabelValues("cleanup"))
+	defer timer.ObserveDuration()
+
+	var tempFiles int
+
+	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(s.bucket),
+		Prefix: aws.String(domain.StoragePathTemp),
+	})
+
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			metrics.StorageOperationErrors.WithLabelValues("cleanup").Inc()
+			return fmt.Errorf("failed to list temp files: %w", err)
+		}
+
+		for _, obj := range page.Contents {
+			if time.Since(*obj.LastModified) > s.cfg.TempFileExpiry {
+				err := s.Delete(ctx, aws.ToString(obj.Key))
+				if err != nil {
+					metrics.StorageOperationErrors.WithLabelValues("cleanup").Inc()
+					continue
+				}
+				tempFiles++
+			}
+		}
+	}
+
+	metrics.StorageTempFileCount.Set(float64(tempFiles))
+	metrics.StorageOperationSuccess.WithLabelValues("cleanup").Inc()
+	return nil
 }

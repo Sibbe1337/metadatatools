@@ -1,4 +1,3 @@
-// Package config provides configuration management for the application
 package config
 
 import (
@@ -7,49 +6,38 @@ import (
 	"time"
 )
 
-// LoadConfig loads configuration from environment variables
-func LoadConfig() *Config {
-	return &Config{
-		Server:   loadServerConfig(),
-		Database: loadDatabaseConfig(),
-		Redis:    loadRedisConfig(),
-		Auth:     loadAuthConfig(),
-		AI:       loadAIConfig(),
-		Storage:  loadStorageConfig(),
-	}
-}
+// Load loads configuration from environment variables
+func Load() (*Config, error) {
+	cfg := &Config{}
 
-func loadServerConfig() ServerConfig {
-	return ServerConfig{
-		Port:        getEnvOrDefault("SERVER_PORT", "8080"),
+	// Server config
+	cfg.Server = ServerConfig{
+		Port:        getEnvAsInt("SERVER_PORT", 8080),
 		Environment: getEnvOrDefault("ENVIRONMENT", "development"),
 		LogLevel:    getEnvOrDefault("LOG_LEVEL", "info"),
 	}
-}
 
-func loadDatabaseConfig() DatabaseConfig {
-	return DatabaseConfig{
+	// Database config
+	cfg.Database = DatabaseConfig{
 		Host:     getEnvOrDefault("DB_HOST", "localhost"),
-		Port:     getEnvOrDefault("DB_PORT", "5432"),
+		Port:     getEnvAsInt("DB_PORT", 5432),
 		User:     getEnvOrDefault("DB_USER", "postgres"),
 		Password: getEnvOrDefault("DB_PASSWORD", ""),
 		DBName:   getEnvOrDefault("DB_NAME", "metadatatool"),
 		SSLMode:  getEnvOrDefault("DB_SSLMODE", "disable"),
 	}
-}
 
-func loadRedisConfig() RedisConfig {
-	return RedisConfig{
+	// Redis config
+	cfg.Redis = RedisConfig{
 		Enabled:  getEnvAsBool("REDIS_ENABLED", false),
 		Host:     getEnvOrDefault("REDIS_HOST", "localhost"),
-		Port:     getEnvOrDefault("REDIS_PORT", "6379"),
+		Port:     getEnvAsInt("REDIS_PORT", 6379),
 		Password: getEnvOrDefault("REDIS_PASSWORD", ""),
 		DB:       getEnvAsInt("REDIS_DB", 0),
 	}
-}
 
-func loadAuthConfig() AuthConfig {
-	return AuthConfig{
+	// Auth config
+	cfg.Auth = AuthConfig{
 		JWTSecret:           getEnvOrDefault("JWT_SECRET", "your-secret-key"),
 		AccessTokenExpiry:   getEnvAsDuration("ACCESS_TOKEN_EXPIRY", 15*time.Minute),
 		RefreshTokenExpiry:  getEnvAsDuration("REFRESH_TOKEN_EXPIRY", 7*24*time.Hour),
@@ -62,10 +50,9 @@ func loadAuthConfig() AuthConfig {
 		EnableTwoFactor:     getEnvAsBool("ENABLE_TWO_FACTOR", false),
 		RequireStrongPasswd: getEnvAsBool("REQUIRE_STRONG_PASSWORD", true),
 	}
-}
 
-func loadAIConfig() AIConfig {
-	return AIConfig{
+	// AI config
+	cfg.AI = AIConfig{
 		ModelName:     getEnvOrDefault("AI_MODEL_NAME", "gpt-4"),
 		ModelVersion:  getEnvOrDefault("AI_MODEL_VERSION", "latest"),
 		Temperature:   getEnvAsFloat("AI_TEMPERATURE", 0.7),
@@ -76,10 +63,9 @@ func loadAIConfig() AIConfig {
 		BaseURL:       getEnvOrDefault("AI_BASE_URL", "https://api.openai.com/v1"),
 		Timeout:       getEnvAsDuration("AI_TIMEOUT", 30*time.Second),
 	}
-}
 
-func loadStorageConfig() StorageConfig {
-	return StorageConfig{
+	// Storage config
+	cfg.Storage = StorageConfig{
 		Provider:         getEnvOrDefault("STORAGE_PROVIDER", "s3"),
 		Region:           getEnvOrDefault("STORAGE_REGION", "us-east-1"),
 		Bucket:           getEnvOrDefault("STORAGE_BUCKET", "metadatatool"),
@@ -90,18 +76,21 @@ func loadStorageConfig() StorageConfig {
 		UploadPartSize:   getEnvAsInt64("STORAGE_UPLOAD_PART_SIZE", 5*1024*1024), // 5MB
 		MaxUploadRetries: getEnvAsInt("STORAGE_MAX_UPLOAD_RETRIES", 3),
 	}
+
+	return cfg, nil
 }
 
-// Helper functions for environment variables
+// Helper functions for environment variable parsing
+
 func getEnvOrDefault(key, defaultValue string) string {
-	if value, exists := os.LookupEnv(key); exists {
+	if value := os.Getenv(key); value != "" {
 		return value
 	}
 	return defaultValue
 }
 
 func getEnvAsInt(key string, defaultValue int) int {
-	if value, exists := os.LookupEnv(key); exists {
+	if value := os.Getenv(key); value != "" {
 		if intValue, err := strconv.Atoi(value); err == nil {
 			return intValue
 		}
@@ -110,7 +99,7 @@ func getEnvAsInt(key string, defaultValue int) int {
 }
 
 func getEnvAsInt64(key string, defaultValue int64) int64 {
-	if value, exists := os.LookupEnv(key); exists {
+	if value := os.Getenv(key); value != "" {
 		if intValue, err := strconv.ParseInt(value, 10, 64); err == nil {
 			return intValue
 		}
@@ -119,7 +108,7 @@ func getEnvAsInt64(key string, defaultValue int64) int64 {
 }
 
 func getEnvAsFloat(key string, defaultValue float64) float64 {
-	if value, exists := os.LookupEnv(key); exists {
+	if value := os.Getenv(key); value != "" {
 		if floatValue, err := strconv.ParseFloat(value, 64); err == nil {
 			return floatValue
 		}
@@ -128,7 +117,7 @@ func getEnvAsFloat(key string, defaultValue float64) float64 {
 }
 
 func getEnvAsBool(key string, defaultValue bool) bool {
-	if value, exists := os.LookupEnv(key); exists {
+	if value := os.Getenv(key); value != "" {
 		if boolValue, err := strconv.ParseBool(value); err == nil {
 			return boolValue
 		}
@@ -137,7 +126,7 @@ func getEnvAsBool(key string, defaultValue bool) bool {
 }
 
 func getEnvAsDuration(key string, defaultValue time.Duration) time.Duration {
-	if value, exists := os.LookupEnv(key); exists {
+	if value := os.Getenv(key); value != "" {
 		if duration, err := time.ParseDuration(value); err == nil {
 			return duration
 		}

@@ -1,6 +1,9 @@
 package domain
 
-import "context"
+import (
+	"context"
+	"encoding/xml"
+)
 
 // DDEX format version
 const (
@@ -19,113 +22,102 @@ type DDEXService interface {
 	ExportTracks(ctx context.Context, tracks []*Track) (string, error)
 }
 
-// DDEXERN43Message represents a DDEX ERN 4.3 message
-type DDEXERN43Message struct {
-	XMLName                string        `xml:"ern:NewReleaseMessage"`
-	XMLNs                  string        `xml:"xmlns,attr"`
-	XMLNsErn               string        `xml:"xmlns:ern,attr"`
-	MessageSchemaVersionId string        `xml:"MessageSchemaVersionId"`
-	MessageHeader          MessageHeader `xml:"MessageHeader"`
-	ResourceList           ResourceList  `xml:"ResourceList"`
-	ReleaseList            ReleaseList   `xml:"ReleaseList"`
-	DealList               DealList      `xml:"DealList"`
+// ERNMessage represents a DDEX ERN message
+type ERNMessage struct {
+	XMLName       xml.Name      `xml:"ernMessage"`
+	MessageHeader MessageHeader `xml:"messageHeader"`
+	ResourceList  ResourceList  `xml:"resourceList"`
+	ReleaseList   ReleaseList   `xml:"releaseList"`
+	DealList      DealList      `xml:"dealList"`
 }
 
 // MessageHeader represents the DDEX message header
 type MessageHeader struct {
-	MessageID          string `xml:"MessageId"`
-	MessageSender      string `xml:"MessageSender"`
-	MessageRecipient   string `xml:"MessageRecipient"`
-	MessageCreatedDate string `xml:"MessageCreatedDateTime"`
-	MessageControlType string `xml:"MessageControlType"`
+	MessageID              string `xml:"messageId"`
+	MessageSender          string `xml:"messageSender"`
+	MessageRecipient       string `xml:"messageRecipient"`
+	MessageCreatedDateTime string `xml:"messageCreatedDateTime"`
 }
 
-// ResourceList contains all resources in the message
+// ResourceList represents a list of resources
 type ResourceList struct {
-	SoundRecordings []SoundRecording `xml:"SoundRecording"`
+	SoundRecordings []SoundRecording `xml:"soundRecording"`
 }
 
-// ReleaseList contains all releases in the message
+// ReleaseList represents a list of releases
 type ReleaseList struct {
-	Releases []Release `xml:"Release"`
+	Releases []Release `xml:"release"`
 }
 
-// DealList contains all deals in the message
+// DealList represents a list of deals
 type DealList struct {
-	ReleaseDeals []ReleaseDeal `xml:"ReleaseDeal"`
-}
-
-// ResourceId represents a DDEX resource identifier
-type ResourceId struct {
-	ISRC string `xml:"ISRC"`
-	Type string `xml:"Type,omitempty"`
-}
-
-// Title represents a DDEX title
-type Title struct {
-	TitleText string `xml:"TitleText"`
-	Type      string `xml:"Type,omitempty"`
-}
-
-// Audio represents DDEX audio technical details
-type Audio struct {
-	Format     string `xml:"AudioCodec"`
-	BitRate    int    `xml:"BitRate"`
-	SampleRate int    `xml:"SampleRate"`
-}
-
-// TechnicalDetails represents DDEX technical metadata
-type TechnicalDetails struct {
-	Audio                             Audio  `xml:"Audio"`
-	TechnicalResourceDetailsReference string `xml:"TechnicalResourceDetailsReference"`
+	ReleaseDeals []ReleaseDeal `xml:"releaseDeal"`
 }
 
 // SoundRecording represents a DDEX sound recording
 type SoundRecording struct {
-	ResourceId         ResourceId       `xml:"SoundRecordingId"`
-	Title              Title            `xml:"ReferenceTitle"`
-	Duration           string           `xml:"Duration"`
-	TechnicalDetails   TechnicalDetails `xml:"TechnicalDetails"`
-	SoundRecordingType string           `xml:"SoundRecordingType"`
-	ResourceReference  string           `xml:"ResourceReference"`
+	ISRC               string           `xml:"isrc"`
+	Title              Title            `xml:"title"`
+	Duration           string           `xml:"duration"`
+	TechnicalDetails   TechnicalDetails `xml:"technicalDetails"`
+	SoundRecordingType string           `xml:"soundRecordingType"`
+	ResourceReference  string           `xml:"resourceReference"`
+}
+
+// Title represents a DDEX title
+type Title struct {
+	TitleText string `xml:"titleText"`
+}
+
+// TechnicalDetails represents technical details of a recording
+type TechnicalDetails struct {
+	TechnicalResourceDetailsReference string `xml:"technicalResourceDetailsReference"`
+	Audio                             Audio  `xml:"audio"`
+}
+
+// Audio represents audio technical details
+type Audio struct {
+	Format     string `xml:"audioFormat"`
+	BitRate    int    `xml:"bitRate"`
+	SampleRate int    `xml:"sampleRate"`
 }
 
 // Release represents a DDEX release
 type Release struct {
-	ReleaseId      ReleaseId `xml:"ReleaseId"`
-	ReferenceTitle Title     `xml:"ReferenceTitle"`
-	ReleaseType    string    `xml:"ReleaseType"`
+	ReleaseID      ReleaseID `xml:"releaseId"`
+	ReferenceTitle Title     `xml:"referenceTitle"`
+	ReleaseType    string    `xml:"releaseType"`
 }
 
-// ReleaseId represents a DDEX release identifier
-type ReleaseId struct {
-	ICPN string `xml:"ICPN"`
+// ReleaseID represents a DDEX release ID
+type ReleaseID struct {
+	ICPN string `xml:"icpn"`
 }
 
 // ReleaseDeal represents a DDEX release deal
 type ReleaseDeal struct {
-	DealReleaseReference string `xml:"DealReleaseReference"`
-	Deal                 Deal   `xml:"Deal"`
+	DealReleaseReference string `xml:"dealReleaseReference"`
+	Deal                 Deal   `xml:"deal"`
 }
 
 // Deal represents a DDEX deal
 type Deal struct {
-	Territory Territory `xml:"Territory"`
-	DealTerms DealTerms `xml:"DealTerms"`
+	Territory Territory `xml:"territory"`
+	DealTerms DealTerms `xml:"dealTerms"`
 }
 
 // Territory represents a DDEX territory
 type Territory struct {
-	TerritoryCode string `xml:"TerritoryCode"`
+	TerritoryCode string `xml:"territoryCode"`
 }
 
 // DealTerms represents DDEX deal terms
 type DealTerms struct {
-	CommercialModelType string `xml:"CommercialModelType"`
-	Usage               Usage  `xml:"Usage"`
+	CommercialModelType string `xml:"commercialModelType"`
+	Usage               Usage  `xml:"usage"`
 }
 
 // Usage represents DDEX usage terms
 type Usage struct {
-	UseType string `xml:"UseType"`
+	UseType string `xml:"useType"`
 }

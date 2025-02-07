@@ -10,13 +10,16 @@ require (
 	github.com/dhowden/tag v0.0.0-20240417053706-3d75831295e8
 	github.com/getsentry/sentry-go v0.31.1
 	github.com/gin-gonic/gin v1.10.0
+	github.com/go-redis/redis/v8 v8.11.5
 	github.com/gofiber/fiber/v2 v2.52.6
 	github.com/golang-jwt/jwt/v5 v5.2.1
 	github.com/google/uuid v1.6.0
+	github.com/lib/pq v1.10.9
 	github.com/prometheus/client_golang v1.20.5
 	github.com/redis/go-redis/v9 v9.7.0
 	github.com/sashabaranov/go-openai v1.37.0
 	github.com/sirupsen/logrus v1.9.3
+	github.com/sony/gobreaker v1.0.0
 	golang.org/x/crypto v0.32.0
 	gorm.io/driver/postgres v1.5.11
 	gorm.io/gorm v1.25.12
