@@ -71,7 +71,7 @@ func (s *Qwen2Service) EnrichMetadata(ctx context.Context, track *domain.Track) 
 		}
 
 		// Process the audio file
-		response, err := s.client.AnalyzeAudio(ctx, track.AudioData, track.AudioFormat)
+		response, err := s.client.AnalyzeAudio(ctx, track.AudioData, track.AudioFormat())
 		if err != nil {
 			processingErr = fmt.Errorf("attempt %d: failed to analyze audio: %w", attempt+1, err)
 			continue // Try again if we have attempts left
@@ -79,25 +79,23 @@ func (s *Qwen2Service) EnrichMetadata(ctx context.Context, track *domain.Track) 
 
 		// Check confidence threshold
 		if response.Confidence < s.config.MinConfidence {
-			track.NeedsReview = true
-			track.AIMetadata = &domain.AIMetadata{
-				Provider:     domain.AIProviderQwen2,
-				Energy:       response.Energy,
-				Danceability: response.Danceability,
+			track.Metadata.AI = &domain.TrackAIMetadata{
+				Tags:         []string{},
+				Confidence:   response.Confidence,
+				Model:        "qwen2",
+				Version:      "v1",
 				ProcessedAt:  time.Now(),
-				ProcessingMs: time.Since(startTime).Milliseconds(),
 				NeedsReview:  true,
 				ReviewReason: fmt.Sprintf("Low confidence score: %.2f", response.Confidence),
 			}
 		} else {
-			track.NeedsReview = false
-			track.AIMetadata = &domain.AIMetadata{
-				Provider:     domain.AIProviderQwen2,
-				Energy:       response.Energy,
-				Danceability: response.Danceability,
-				ProcessedAt:  time.Now(),
-				ProcessingMs: time.Since(startTime).Milliseconds(),
-				NeedsReview:  false,
+			track.Metadata.AI = &domain.TrackAIMetadata{
+				Tags:        []string{},
+				Confidence:  response.Confidence,
+				Model:       "qwen2",
+				Version:     "v1",
+				ProcessedAt: time.Now(),
+				NeedsReview: false,
 			}
 		}
 

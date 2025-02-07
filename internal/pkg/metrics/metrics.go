@@ -38,8 +38,8 @@ var (
 	DatabaseQueryDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "database_query_duration_seconds",
-			Help:    "Database query duration in seconds",
-			Buckets: []float64{.001, .005, .01, .025, .05, .1, .25, .5, 1},
+			Help:    "Duration of database queries",
+			Buckets: prometheus.DefBuckets,
 		},
 		[]string{"operation"},
 	)
@@ -111,7 +111,7 @@ var (
 	// DatabaseOperationsTotal tracks total database operations
 	DatabaseOperationsTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "db_operations_total",
+			Name: "database_operations_total",
 			Help: "Total number of database operations",
 		},
 		[]string{"operation", "status"},
@@ -178,6 +178,103 @@ var (
 			Help: "Total number of AI service errors by type",
 		},
 		[]string{"provider", "error_type"},
+	)
+
+	// AI Service metrics
+	AIBatchProcessingDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "ai_batch_processing_duration_seconds",
+		Help:    "Duration of AI batch processing operations",
+		Buckets: prometheus.DefBuckets,
+	})
+
+	BatchProcessingTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ai_batch_processing_total",
+		Help: "Total number of batch processing operations",
+	})
+
+	TracksProcessedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ai_tracks_processed_total",
+		Help: "Total number of tracks processed",
+	})
+
+	AIEnrichmentErrors = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ai_enrichment_errors_total",
+		Help: "Total number of AI enrichment errors",
+	})
+
+	AIValidationErrors = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ai_validation_errors_total",
+		Help: "Total number of AI validation errors",
+	})
+
+	AIRetryAttempts = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ai_retry_attempts_total",
+		Help: "Total number of AI operation retry attempts",
+	})
+
+	AIBatchErrors = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "ai_batch_errors_total",
+		Help: "Total number of errors in batch processing",
+	})
+
+	// Audio processing metrics
+	AudioProcessingTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "audio_processing_total",
+			Help: "Total number of audio processing attempts",
+		},
+		[]string{"operation", "status"},
+	)
+
+	AudioProcessingDuration = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "audio_processing_duration_seconds",
+			Help:    "Duration of audio processing operations",
+			Buckets: []float64{0.1, 0.5, 1, 2, 5, 10, 30, 60, 120, 300},
+		},
+		[]string{"operation"},
+	)
+
+	AudioProcessingSuccess = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "audio_processing_success_total",
+			Help: "Total number of successful audio processing operations",
+		},
+		[]string{"operation"},
+	)
+
+	AudioProcessingErrors = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "audio_processing_errors_total",
+			Help: "Total number of audio processing errors",
+		},
+		[]string{"operation", "error_type"},
+	)
+
+	// AI processing metrics
+	AIProcessingTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "ai_processing_total",
+			Help: "Total number of AI processing attempts",
+		},
+		[]string{"model", "operation"},
+	)
+
+	AIProcessingDuration = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "ai_processing_duration_seconds",
+			Help:    "Duration of AI processing operations",
+			Buckets: []float64{0.1, 0.5, 1, 2, 5, 10, 30, 60},
+		},
+		[]string{"model", "operation"},
+	)
+
+	AIProcessingErrors = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "ai_processing_errors_total",
+			Help: "Total number of AI processing errors",
+		},
+		[]string{"model", "error_type"},
 	)
 )
 

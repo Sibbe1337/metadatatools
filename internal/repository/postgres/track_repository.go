@@ -14,41 +14,13 @@ import (
 
 // TrackModel represents the database model for tracks
 type TrackModel struct {
-	ID        string `gorm:"primaryKey;type:uuid"`
-	Title     string `gorm:"not null"`
-	Artist    string `gorm:"not null"`
-	Album     string
-	Genre     string
-	Duration  float64
-	FilePath  string
-	Year      int
-	Label     string
-	Territory string
-	ISRC      string `gorm:"index"`
-	ISWC      string
-	BPM       float64
-	Key       string
-	Mood      string
-	Publisher string
-
-	// Audio metadata
-	AudioFormat string
+	ID          string `gorm:"primaryKey;type:uuid"`
+	StoragePath string
 	FileSize    int64
-
-	// AI-related fields
-	AITags       []string `gorm:"type:text[]"`
-	AIConfidence float64
-	ModelVersion string
-	NeedsReview  bool
-	AIMetadata   json.RawMessage `gorm:"type:jsonb"`
-
-	// Base metadata
-	Metadata json.RawMessage `gorm:"type:jsonb"`
-
-	// Timestamps
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	DeletedAt *time.Time `gorm:"index"`
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	DeletedAt   *time.Time      `gorm:"index"`
+	Metadata    json.RawMessage `gorm:"type:jsonb"`
 }
 
 // PostgresTrackRepository implements domain.TrackRepository
@@ -77,9 +49,8 @@ func (r *PostgresTrackRepository) Create(ctx context.Context, track *domain.Trac
 		return fmt.Errorf("failed to convert track to model: %w", err)
 	}
 
-	result := r.db.WithContext(ctx).Create(model)
-	if result.Error != nil {
-		return fmt.Errorf("failed to create track: %w", result.Error)
+	if err := r.db.WithContext(ctx).Create(model).Error; err != nil {
+		return fmt.Errorf("failed to create track: %w", err)
 	}
 
 	return nil
@@ -93,17 +64,24 @@ func (r *PostgresTrackRepository) GetByID(ctx context.Context, id string) (*doma
 	}()
 
 	var model TrackModel
-	result := r.db.WithContext(ctx).Where("id = ? AND deleted_at IS NULL", id).First(&model)
-	if result.Error != nil {
-		if result.Error == gorm.ErrRecordNotFound {
+	if err := r.db.WithContext(ctx).First(&model, "id = ?", id).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("failed to get track: %w", result.Error)
+		return nil, fmt.Errorf("failed to get track: %w", err)
 	}
 
-	track, err := model.toDomain()
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert model to track: %w", err)
+	track := &domain.Track{
+		ID:          model.ID,
+		StoragePath: model.StoragePath,
+		FileSize:    model.FileSize,
+		CreatedAt:   model.CreatedAt,
+		UpdatedAt:   model.UpdatedAt,
+		DeletedAt:   model.DeletedAt,
+	}
+
+	if err := json.Unmarshal(model.Metadata, &track.Metadata); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
 	}
 
 	return track, nil
@@ -237,89 +215,38 @@ func (r *PostgresTrackRepository) SearchByMetadata(ctx context.Context, query ma
 // Helper functions
 
 func toModel(track *domain.Track) (*TrackModel, error) {
-	aiMetadata, err := json.Marshal(track.AIMetadata)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal AI metadata: %w", err)
-	}
-
 	metadata, err := json.Marshal(track.Metadata)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal metadata: %w", err)
 	}
 
 	return &TrackModel{
-		ID:           track.ID,
-		Title:        track.Title,
-		Artist:       track.Artist,
-		Album:        track.Album,
-		Genre:        track.Genre,
-		Duration:     track.Duration,
-		FilePath:     track.FilePath,
-		Year:         track.Year,
-		Label:        track.Label,
-		Territory:    track.Territory,
-		ISRC:         track.ISRC,
-		ISWC:         track.ISWC,
-		BPM:          track.BPM,
-		Key:          track.Key,
-		Mood:         track.Mood,
-		Publisher:    track.Publisher,
-		AudioFormat:  track.AudioFormat,
-		FileSize:     track.FileSize,
-		AITags:       track.AITags,
-		AIConfidence: track.AIConfidence,
-		ModelVersion: track.ModelVersion,
-		NeedsReview:  track.NeedsReview,
-		AIMetadata:   aiMetadata,
-		Metadata:     metadata,
-		CreatedAt:    track.CreatedAt,
-		UpdatedAt:    track.UpdatedAt,
-		DeletedAt:    track.DeletedAt,
+		ID:          track.ID,
+		StoragePath: track.StoragePath,
+		FileSize:    track.FileSize,
+		CreatedAt:   track.CreatedAt,
+		UpdatedAt:   track.UpdatedAt,
+		DeletedAt:   track.DeletedAt,
+		Metadata:    metadata,
 	}, nil
 }
 
 func (m *TrackModel) toDomain() (*domain.Track, error) {
-	var aiMetadata *domain.AIMetadata
-	if m.AIMetadata != nil {
-		if err := json.Unmarshal(m.AIMetadata, &aiMetadata); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal AI metadata: %w", err)
-		}
-	}
-
-	var metadata domain.Metadata
+	var metadata domain.CompleteTrackMetadata
 	if m.Metadata != nil {
 		if err := json.Unmarshal(m.Metadata, &metadata); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
 		}
 	}
 
-	return &domain.Track{
-		ID:           m.ID,
-		Title:        m.Title,
-		Artist:       m.Artist,
-		Album:        m.Album,
-		Genre:        m.Genre,
-		Duration:     m.Duration,
-		FilePath:     m.FilePath,
-		Year:         m.Year,
-		Label:        m.Label,
-		Territory:    m.Territory,
-		ISRC:         m.ISRC,
-		ISWC:         m.ISWC,
-		BPM:          m.BPM,
-		Key:          m.Key,
-		Mood:         m.Mood,
-		Publisher:    m.Publisher,
-		AudioFormat:  m.AudioFormat,
-		FileSize:     m.FileSize,
-		AITags:       m.AITags,
-		AIConfidence: m.AIConfidence,
-		ModelVersion: m.ModelVersion,
-		NeedsReview:  m.NeedsReview,
-		AIMetadata:   aiMetadata,
-		Metadata:     metadata,
-		CreatedAt:    m.CreatedAt,
-		UpdatedAt:    m.UpdatedAt,
-		DeletedAt:    m.DeletedAt,
-	}, nil
+	track := &domain.Track{
+		ID:          m.ID,
+		StoragePath: m.StoragePath,
+		FileSize:    m.FileSize,
+		CreatedAt:   m.CreatedAt,
+		UpdatedAt:   m.UpdatedAt,
+		DeletedAt:   m.DeletedAt,
+		Metadata:    metadata,
+	}
+	return track, nil
 }

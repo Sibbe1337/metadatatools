@@ -1,6 +1,8 @@
 module metadatatool
 
-go 1.21
+go 1.21.1
+
+toolchain go1.23.5
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.36.1

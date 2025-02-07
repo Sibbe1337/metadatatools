@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 	"fmt"
-	"io"
 	"metadatatool/internal/config"
 	"metadatatool/internal/pkg/domain"
 	"metadatatool/internal/pkg/metrics"
@@ -49,20 +48,45 @@ func NewStorageService(cfg config.StorageConfig) (domain.StorageService, error) 
 }
 
 // Upload uploads a file to storage
-func (s *StorageService) Upload(ctx context.Context, key string, data io.Reader) error {
-	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket: aws.String(s.bucket),
-		Key:    aws.String(key),
-		Body:   data,
-	})
+func (s *StorageService) Upload(ctx context.Context, file *domain.StorageFile) error {
+	metadata := make(map[string]string)
+	for k, v := range file.Metadata {
+		metadata[k] = v
+	}
+
+	input := &s3.PutObjectInput{
+		Bucket:      aws.String(s.bucket),
+		Key:         aws.String(file.Key),
+		Body:        file.Content,
+		ContentType: aws.String(file.ContentType),
+		Metadata:    metadata,
+	}
+
+	_, err := s.client.PutObject(ctx, input)
 	if err != nil {
 		return fmt.Errorf("failed to upload file: %w", err)
 	}
+
 	return nil
 }
 
+// GetURL returns a pre-signed URL for the given key
+func (s *StorageService) GetURL(ctx context.Context, key string) (string, error) {
+	presignClient := s3.NewPresignClient(s.client)
+	request, err := presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	}, func(opts *s3.PresignOptions) {
+		opts.Expires = time.Hour * 24 // 24 hour expiry
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to generate pre-signed URL: %w", err)
+	}
+	return request.URL, nil
+}
+
 // Download downloads a file from storage
-func (s *StorageService) Download(ctx context.Context, key string) (io.ReadCloser, error) {
+func (s *StorageService) Download(ctx context.Context, key string) (*domain.StorageFile, error) {
 	result, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
@@ -70,7 +94,32 @@ func (s *StorageService) Download(ctx context.Context, key string) (io.ReadClose
 	if err != nil {
 		return nil, fmt.Errorf("failed to download file: %w", err)
 	}
-	return result.Body, nil
+
+	// Get object metadata
+	head, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get file metadata: %w", err)
+	}
+
+	// Create StorageFile with metadata
+	file := &domain.StorageFile{
+		Key:         key,
+		Name:        filepath.Base(key),
+		Size:        aws.ToInt64(head.ContentLength),
+		ContentType: aws.ToString(head.ContentType),
+		Content:     result.Body,
+		Metadata:    make(map[string]string),
+	}
+
+	// Copy metadata
+	for k, v := range head.Metadata {
+		file.Metadata[k] = v // v is already a string, no need for aws.ToString
+	}
+
+	return file, nil
 }
 
 // Delete deletes a file from storage

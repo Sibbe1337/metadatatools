@@ -2,75 +2,95 @@ package domain
 
 import (
 	"context"
-	"io"
 	"time"
 )
 
-// AudioFormat represents supported audio formats
+// AudioFormat represents the format of an audio file
 type AudioFormat string
 
 const (
-	FormatMP3  AudioFormat = "mp3"
-	FormatWAV  AudioFormat = "wav"
-	FormatFLAC AudioFormat = "flac"
-	FormatM4A  AudioFormat = "m4a"
-	FormatAAC  AudioFormat = "aac"
+	AudioFormatMP3  AudioFormat = "mp3"
+	AudioFormatWAV  AudioFormat = "wav"
+	AudioFormatFLAC AudioFormat = "flac"
+	AudioFormatM4A  AudioFormat = "m4a"
+	AudioFormatAAC  AudioFormat = "aac"
+	AudioFormatOGG  AudioFormat = "ogg"
 )
 
-// AudioMetadata represents extracted audio metadata
+// IsValid checks if the audio format is supported
+func (f AudioFormat) IsValid() bool {
+	switch f {
+	case AudioFormatMP3, AudioFormatWAV, AudioFormatFLAC, AudioFormatM4A, AudioFormatAAC, AudioFormatOGG:
+		return true
+	default:
+		return false
+	}
+}
+
+// String returns the string representation of the audio format
+func (f AudioFormat) String() string {
+	return string(f)
+}
+
+// AudioMetadata represents metadata extracted from an audio file
 type AudioMetadata struct {
 	// Basic metadata
-	Title       string
-	Artist      string
-	Album       string
-	Year        int
-	Genre       string
-	TrackNumber int
-	Duration    float64
+	Title    string `json:"title"`
+	Artist   string `json:"artist"`
+	Album    string `json:"album"`
+	Year     int    `json:"year"`
+	Duration int    `json:"duration"` // Duration in seconds
+	ISRC     string `json:"isrc"`
 
 	// Technical details
-	Format       AudioFormat
-	Bitrate      int
-	SampleRate   int
-	Channels     int
+	Format     AudioFormat `json:"format"`
+	Bitrate    int         `json:"bitrate"`    // Bitrate in kbps
+	SampleRate int         `json:"sampleRate"` // Sample rate in Hz
+	Channels   int         `json:"channels"`   // Number of audio channels
+
+	// Musical attributes
+	BPM float64 `json:"bpm"` // Beats per minute
+	Key string  `json:"key"` // Musical key
+
+	// Additional metadata
+	Genre        string
+	TrackNumber  int
 	BitDepth     int
 	FileSize     int64
 	IsLossless   bool
 	IsVariable   bool
 	EncodingTool string
-
-	// Additional metadata
-	Composer   string
-	Publisher  string
-	ISRC       string
-	Copyright  string
-	Lyrics     string
-	CoverArt   []byte
-	Comments   string
-	Rating     int
-	BPM        float64
-	ReplayGain float64
-	ModifiedAt time.Time
-	EncodedAt  time.Time
-	CustomTags map[string]string
+	Composer     string
+	Publisher    string
+	Copyright    string
+	Lyrics       string
+	CoverArt     []byte
+	Comments     string
+	Rating       int
+	ReplayGain   float64
+	ModifiedAt   time.Time
+	EncodedAt    time.Time
+	CustomTags   map[string]string
 }
 
-// AudioProcessor handles audio file processing
+// AudioProcessOptions contains options for audio processing
+type AudioProcessOptions struct {
+	FilePath        string      // Path to the audio file
+	Format          AudioFormat // Audio format
+	AnalyzeAudio    bool        // Whether to perform audio analysis
+	ExtractMetadata bool        // Whether to extract metadata
+}
+
+// AudioProcessor defines the interface for audio processing
 type AudioProcessor interface {
-	// Process processes an audio file and returns its metadata
-	Process(ctx context.Context, file io.Reader, filename string) (*AudioMetadata, error)
+	// Process processes an audio file with the given options
+	Process(ctx context.Context, file *ProcessingAudioFile, options *AudioProcessOptions) (*AudioProcessResult, error)
+}
 
-	// Convert converts an audio file to a different format
-	Convert(ctx context.Context, file io.Reader, from, to AudioFormat) (io.Reader, error)
-
-	// ExtractMetadata extracts metadata from an audio file
-	ExtractMetadata(ctx context.Context, file io.Reader, format AudioFormat) (*AudioMetadata, error)
-
-	// ValidateFormat validates if the file is a valid audio file
-	ValidateFormat(ctx context.Context, file io.Reader, format AudioFormat) error
-
-	// AnalyzeAudio performs audio analysis (BPM, key detection, etc.)
-	AnalyzeAudio(ctx context.Context, file io.Reader, format AudioFormat) (*AudioAnalysis, error)
+// AudioProcessResult contains the results of audio processing
+type AudioProcessResult struct {
+	Metadata     *CompleteTrackMetadata // Complete track metadata
+	AnalyzerInfo string                 // Information about the analyzer used
 }
 
 // AudioAnalysis represents the results of audio analysis
@@ -128,8 +148,20 @@ type AudioSegment struct {
 // AudioService handles audio file operations
 type AudioService interface {
 	// Upload stores an audio file and returns its URL
-	Upload(ctx context.Context, file *File) (string, error)
+	Upload(ctx context.Context, file *StorageFile) (string, error)
 
 	// GetURL retrieves a pre-signed URL for an audio file
 	GetURL(ctx context.Context, id string) (string, error)
+}
+
+// StorageClient defines the interface for storage operations
+type StorageClient interface {
+	// Upload uploads a file to storage
+	Upload(ctx context.Context, file *StorageFile) error
+
+	// Download downloads a file from storage
+	Download(ctx context.Context, path string) (*StorageFile, error)
+
+	// Delete deletes a file from storage
+	Delete(ctx context.Context, path string) error
 }

@@ -3,12 +3,12 @@ package handler
 import (
 	"fmt"
 	"metadatatool/internal/pkg/domain"
-	"net/http"
 	"path/filepath"
 	"time"
 
+	"metadatatool/internal/pkg/metrics"
+
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 )
 
 type AudioHandler struct {
@@ -36,65 +36,76 @@ func NewAudioHandler(storage domain.StorageService, trackRepo domain.TrackReposi
 // @Failure 500 {object} ErrorResponse
 // @Router /audio/upload [post]
 func (h *AudioHandler) UploadAudio(c *gin.Context) {
-	// Get the file
+	timer := metrics.NewTimer(metrics.AudioOpDurations.WithLabelValues("upload"))
+	defer timer.ObserveDuration()
+
+	metrics.AudioOps.WithLabelValues("upload", "started").Inc()
+
 	file, err := c.FormFile("file")
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "invalid file upload",
-		})
+		metrics.AudioOpErrors.WithLabelValues("upload", "form_error").Inc()
+		c.JSON(400, gin.H{"error": "No file provided"})
 		return
 	}
 
-	// Validate file type
-	if !isValidAudioFormat(file.Filename) {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "invalid audio format",
-		})
-		return
-	}
+	// Generate storage key
+	key := fmt.Sprintf("audio/%s/%s", time.Now().Format("2006/01/02"), file.Filename)
 
-	// Generate unique filename
-	filename := fmt.Sprintf("%s%s", uuid.New().String(), filepath.Ext(file.Filename))
-	key := filepath.Join("audio", filename)
-
-	// Open the file
+	// Open the uploaded file
 	src, err := file.Open()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "failed to read file",
-		})
+		metrics.AudioOpErrors.WithLabelValues("upload", "open_error").Inc()
+		c.JSON(500, gin.H{"error": "Failed to open file"})
 		return
 	}
 	defer src.Close()
 
+	// Create storage file
+	storageFile := &domain.StorageFile{
+		Key:         key,
+		Name:        file.Filename,
+		Size:        file.Size,
+		ContentType: file.Header.Get("Content-Type"),
+		Content:     src,
+	}
+
 	// Upload to storage
-	if err := h.storage.Upload(c, key, src); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "failed to upload file",
-		})
+	if err := h.storage.Upload(c, storageFile); err != nil {
+		metrics.AudioOpErrors.WithLabelValues("upload", "storage_error").Inc()
+		c.JSON(500, gin.H{"error": "Failed to upload file"})
 		return
 	}
 
 	// Create track record
 	track := &domain.Track{
-		Title:       file.Filename,
-		FilePath:    key,
-		AudioFormat: getAudioFormat(file.Filename),
+		StoragePath: key,
 		FileSize:    file.Size,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
+		Metadata: domain.CompleteTrackMetadata{
+			BasicTrackMetadata: domain.BasicTrackMetadata{
+				Title:     filepath.Base(file.Filename),
+				CreatedAt: time.Now(),
+				UpdatedAt: time.Now(),
+			},
+			Technical: domain.AudioTechnicalMetadata{
+				Format:   domain.AudioFormat(filepath.Ext(file.Filename)[1:]),
+				FileSize: file.Size,
+			},
+		},
 	}
 
 	if err := h.trackRepo.Create(c, track); err != nil {
-		// Try to clean up the uploaded file
-		_ = h.storage.Delete(c, key)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "failed to create track record",
-		})
+		metrics.AudioOpErrors.WithLabelValues("upload", "db_error").Inc()
+		c.JSON(500, gin.H{"error": "Failed to create track record"})
 		return
 	}
 
-	c.JSON(http.StatusCreated, track)
+	metrics.AudioOps.WithLabelValues("upload", "completed").Inc()
+	c.JSON(200, gin.H{
+		"id":  track.ID,
+		"url": key,
+	})
 }
 
 // GetAudioURL generates a pre-signed URL for audio download
@@ -108,41 +119,28 @@ func (h *AudioHandler) UploadAudio(c *gin.Context) {
 // @Failure 500 {object} ErrorResponse
 // @Router /audio/{id} [get]
 func (h *AudioHandler) GetAudioURL(c *gin.Context) {
-	id := c.Param("id")
-	if id == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "missing track ID",
-		})
-		return
-	}
+	timer := metrics.NewTimer(metrics.AudioOpDurations.WithLabelValues("get_url"))
+	defer timer.ObserveDuration()
 
-	// Get track
+	metrics.AudioOps.WithLabelValues("get_url", "started").Inc()
+
+	id := c.Param("id")
 	track, err := h.trackRepo.GetByID(c, id)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "failed to get track",
-		})
-		return
-	}
-	if track == nil {
-		c.JSON(http.StatusNotFound, gin.H{
-			"error": "track not found",
-		})
+		metrics.AudioOpErrors.WithLabelValues("get_url", "not_found").Inc()
+		c.JSON(404, gin.H{"error": "Track not found"})
 		return
 	}
 
-	// Generate pre-signed URL
-	url, err := h.storage.GetSignedURL(c, track.FilePath, domain.SignedURLDownload, 15*time.Minute)
+	url, err := h.storage.GetURL(c, track.StoragePath)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "failed to generate download URL",
-		})
+		metrics.AudioOpErrors.WithLabelValues("get_url", "storage_error").Inc()
+		c.JSON(500, gin.H{"error": "Failed to generate URL"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"url": url,
-	})
+	metrics.AudioOps.WithLabelValues("get_url", "completed").Inc()
+	c.JSON(200, gin.H{"url": url})
 }
 
 // Helper functions moved to audio_utils.go

@@ -102,10 +102,52 @@ func (r *CachedTrackRepository) Delete(ctx context.Context, id string) error {
 	return r.delegate.Delete(ctx, id)
 }
 
-// List retrieves a paginated list of tracks (not cached)
-func (r *CachedTrackRepository) List(ctx context.Context, offset, limit int) ([]*domain.Track, error) {
-	// List operations are not cached as they can vary widely
-	return r.delegate.List(ctx, offset, limit)
+// List retrieves tracks based on filters with pagination
+func (r *CachedTrackRepository) List(ctx context.Context, filters map[string]interface{}, offset, limit int) ([]*domain.Track, error) {
+	// List operations are not cached as they can be complex and varied
+	return r.delegate.List(ctx, filters, offset, limit)
+}
+
+// GetByISRC retrieves a track by ISRC
+func (r *CachedTrackRepository) GetByISRC(ctx context.Context, isrc string) (*domain.Track, error) {
+	key := fmt.Sprintf("%sisrc:%s", trackKeyPrefix, isrc)
+
+	// Try to get from cache first
+	track, err := r.getFromCache(ctx, key)
+	if err == nil {
+		metrics.CacheHits.WithLabelValues("track", "isrc").Inc()
+		return track, nil
+	}
+
+	// Get from delegate
+	track, err = r.delegate.GetByISRC(ctx, isrc)
+	if err != nil {
+		return nil, err
+	}
+
+	// Store in cache
+	if err := r.setCache(ctx, key, track); err != nil {
+		// Log error but don't fail the request
+		fmt.Printf("failed to cache track by ISRC: %v\n", err)
+	}
+
+	metrics.CacheMisses.WithLabelValues("track", "isrc").Inc()
+	return track, nil
+}
+
+// BatchUpdate updates multiple tracks in a single transaction
+func (r *CachedTrackRepository) BatchUpdate(ctx context.Context, tracks []*domain.Track) error {
+	err := r.delegate.BatchUpdate(ctx, tracks)
+	if err != nil {
+		return err
+	}
+
+	// Invalidate cache for all updated tracks
+	for _, track := range tracks {
+		r.invalidateCache(ctx, track)
+	}
+
+	return nil
 }
 
 // Helper functions for cache operations

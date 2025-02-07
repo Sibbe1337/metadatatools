@@ -4,40 +4,59 @@ import (
 	"context"
 	"fmt"
 	"metadatatool/internal/pkg/domain"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 )
 
 func (r *mutationResolver) CreateTrack(ctx context.Context, input domain.CreateTrackInput) (*domain.Track, error) {
-	// Create track
+	// Create track with basic fields
 	track := &domain.Track{
 		ID:        uuid.New().String(),
-		Title:     input.Title,
-		Artist:    input.Artist,
-		Album:     stringValue(input.Album),
-		Genre:     stringValue(input.Genre),
-		Year:      intValue(input.Year),
-		Label:     stringValue(input.Label),
-		Territory: stringValue(input.Territory),
-		ISRC:      stringValue(input.ISRC),
-		ISWC:      stringValue(input.ISWC),
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
+		Metadata: domain.CompleteTrackMetadata{
+			BasicTrackMetadata: domain.BasicTrackMetadata{
+				Title:  input.Title,
+				Artist: input.Artist,
+				Album:  stringValue(input.Album),
+				Year:   intValue(input.Year),
+				ISRC:   stringValue(input.ISRC),
+			},
+			Musical: domain.MusicalMetadata{
+				Genre: stringValue(input.Genre),
+			},
+			Additional: domain.AdditionalMetadata{
+				CustomFields: map[string]string{
+					"label":     stringValue(input.Label),
+					"territory": stringValue(input.Territory),
+					"iswc":      stringValue(input.ISWC),
+				},
+			},
+		},
 	}
 
 	// Handle audio file if provided
 	if input.AudioFile != nil {
-		// Store file
-		key := fmt.Sprintf("audio/%s/%s", track.ID, input.AudioFile.Filename)
-		if err := r.StorageService.Upload(ctx, key, input.AudioFile.File); err != nil {
+		// Create storage file
+		storageFile := &domain.StorageFile{
+			Key:         fmt.Sprintf("audio/%s/%s", track.ID, input.AudioFile.Filename),
+			Name:        input.AudioFile.Filename,
+			Size:        input.AudioFile.Size,
+			Content:     input.AudioFile.File,
+			ContentType: "audio/" + strings.TrimPrefix(filepath.Ext(input.AudioFile.Filename), "."),
+		}
+
+		// Upload file
+		if err := r.StorageService.Upload(ctx, storageFile); err != nil {
 			return nil, fmt.Errorf("failed to upload audio file: %w", err)
 		}
-		track.FilePath = key
-		track.FileSize = input.AudioFile.Size
+		track.StoragePath = storageFile.Key
 	}
 
-	// Save track
+	// Create track in database
 	if err := r.TrackRepo.Create(ctx, track); err != nil {
 		return nil, fmt.Errorf("failed to create track: %w", err)
 	}
@@ -67,63 +86,64 @@ func (r *mutationResolver) UpdateTrack(ctx context.Context, input domain.UpdateT
 		return nil, fmt.Errorf("failed to get track: %w", err)
 	}
 
-	// Update fields if provided
+	// Update basic metadata fields if provided
 	if input.Title != nil {
-		track.Title = *input.Title
+		track.Metadata.Title = *input.Title
 	}
 	if input.Artist != nil {
-		track.Artist = *input.Artist
+		track.Metadata.Artist = *input.Artist
 	}
 	if input.Album != nil {
-		track.Album = *input.Album
+		track.Metadata.Album = *input.Album
 	}
 	if input.Genre != nil {
-		track.Genre = *input.Genre
+		track.Metadata.Musical.Genre = *input.Genre
 	}
 	if input.Year != nil {
-		track.Year = *input.Year
+		track.Metadata.Year = *input.Year
 	}
 	if input.Label != nil {
-		track.Label = *input.Label
+		track.Metadata.Additional.CustomFields["label"] = *input.Label
 	}
 	if input.Territory != nil {
-		track.Territory = *input.Territory
+		track.Metadata.Additional.CustomFields["territory"] = *input.Territory
 	}
 	if input.ISRC != nil {
-		track.ISRC = *input.ISRC
+		track.Metadata.ISRC = *input.ISRC
 	}
 	if input.ISWC != nil {
-		track.ISWC = *input.ISWC
+		track.Metadata.Additional.CustomFields["iswc"] = *input.ISWC
 	}
 
-	// Update metadata if provided
+	// Update additional metadata if provided
 	if input.Metadata != nil {
-		if input.Metadata.ISRC != nil {
-			track.Metadata.ISRC = *input.Metadata.ISRC
-		}
-		if input.Metadata.ISWC != nil {
-			track.Metadata.ISWC = *input.Metadata.ISWC
-		}
 		if input.Metadata.BPM != nil {
-			track.Metadata.BPM = *input.Metadata.BPM
+			track.Metadata.Musical.BPM = *input.Metadata.BPM
 		}
 		if input.Metadata.Key != nil {
-			track.Metadata.Key = *input.Metadata.Key
+			track.Metadata.Musical.Key = *input.Metadata.Key
 		}
 		if input.Metadata.Mood != nil {
-			track.Metadata.Mood = *input.Metadata.Mood
+			track.Metadata.Musical.Mood = *input.Metadata.Mood
 		}
 		if input.Metadata.Labels != nil {
-			track.Metadata.Labels = input.Metadata.Labels
+			// Convert string slice to map for tags
+			tags := make(map[string]string)
+			for _, label := range input.Metadata.Labels {
+				tags[label] = "true"
+			}
+			track.Metadata.Additional.CustomTags = tags
 		}
 		if input.Metadata.CustomFields != nil {
-			track.Metadata.CustomFields = input.Metadata.CustomFields
+			for k, v := range input.Metadata.CustomFields {
+				track.Metadata.Additional.CustomFields[k] = v
+			}
 		}
 	}
 
 	track.UpdatedAt = time.Now()
 
-	// Save changes
+	// Update track in database
 	if err := r.TrackRepo.Update(ctx, track); err != nil {
 		return nil, fmt.Errorf("failed to update track: %w", err)
 	}
@@ -139,8 +159,8 @@ func (r *mutationResolver) DeleteTrack(ctx context.Context, id string) (bool, er
 	}
 
 	// Delete audio file if exists
-	if track.FilePath != "" {
-		if err := r.StorageService.Delete(ctx, track.FilePath); err != nil {
+	if track.StoragePath != "" {
+		if err := r.StorageService.Delete(ctx, track.StoragePath); err != nil {
 			return false, fmt.Errorf("failed to delete audio file: %w", err)
 		}
 	}

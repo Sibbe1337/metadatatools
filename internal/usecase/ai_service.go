@@ -49,7 +49,7 @@ Please provide the following metadata in a structured format:
 5. 3-5 descriptive tags
 6. Similar artists/influences
 
-Respond in a structured JSON format.`, track.Title, track.Artist, track.Album, track.Duration)
+Respond in a structured JSON format.`, track.Title(), track.Artist(), track.Album(), track.Duration())
 
 	// Call OpenAI API
 	resp, err := s.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
@@ -89,27 +89,26 @@ Respond in a structured JSON format.`, track.Title, track.Artist, track.Album, t
 	}
 
 	// Update track with AI-generated metadata
-	track.Genre = result.Genre
-	track.Mood = result.Mood
-	track.Key = result.Key
-	track.BPM = result.BPM
-	track.AITags = result.Tags
-	track.AIConfidence = confidence
-	track.ModelVersion = s.cfg.ModelVersion
-	track.NeedsReview = confidence < s.cfg.MinConfidence
+	track.SetGenre(result.Genre)
+	track.SetMood(result.Mood)
+	track.SetKey(result.Key)
+	track.SetBPM(result.BPM)
 
-	// Update metadata struct
-	track.Metadata.Labels = []string{result.Genre} // Store genre as a label
-	track.Metadata.Mood = result.Mood
-	track.Metadata.Key = result.Key
-	track.Metadata.BPM = result.BPM
-	track.Metadata.AITags = result.Tags
-	track.Metadata.Confidence = confidence
-	track.Metadata.ModelVersion = s.cfg.ModelVersion
+	// Update AI metadata
+	if track.Metadata.AI == nil {
+		track.Metadata.AI = &domain.TrackAIMetadata{
+			Model:   s.cfg.ModelName,
+			Version: s.cfg.ModelVersion,
+		}
+	}
+	track.Metadata.AI.Tags = result.Tags
+	track.Metadata.AI.Confidence = confidence
+	track.Metadata.AI.Version = s.cfg.ModelVersion
+	track.Metadata.AI.NeedsReview = confidence < s.cfg.MinConfidence
 
-	// Store similar artists in custom fields
-	track.Metadata.CustomFields = map[string]string{
-		"similar_artists": strings.Join(result.SimilarArtist, ","),
+	// Store similar artists in custom tags
+	if len(result.SimilarArtist) > 0 {
+		track.Metadata.Additional.CustomTags["similar_artists"] = strings.Join(result.SimilarArtist, ",")
 	}
 
 	return nil
@@ -141,8 +140,8 @@ Respond with a JSON object containing:
 1. A validation score (0-1) for each field
 2. An overall confidence score
 3. Any inconsistencies or potential errors found`,
-		track.Title, track.Artist, track.Album, track.Genre, track.Mood,
-		track.Key, track.BPM, strings.Join(track.AITags, ", "))
+		track.Title(), track.Artist(), track.Album(), track.Genre(), track.Mood(),
+		track.Key(), track.BPM(), strings.Join(track.Metadata.AI.Tags, ", "))
 
 	// Call OpenAI API
 	resp, err := s.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
@@ -184,16 +183,16 @@ Respond with a JSON object containing:
 	// Calculate final confidence score
 	confidence := result.Scores.Overall
 
-	// Store validation issues in custom fields if any
+	// Store validation issues in custom tags if any
 	if len(result.Issues) > 0 {
-		if track.Metadata.CustomFields == nil {
-			track.Metadata.CustomFields = make(map[string]string)
+		if track.Metadata.Additional.CustomTags == nil {
+			track.Metadata.Additional.CustomTags = make(map[string]string)
 		}
-		track.Metadata.CustomFields["validation_issues"] = strings.Join(result.Issues, "; ")
+		track.Metadata.Additional.CustomTags["validation_issues"] = strings.Join(result.Issues, "; ")
 	}
 
 	// Update track's review status
-	track.NeedsReview = confidence < s.cfg.MinConfidence || len(result.Issues) > 0
+	track.Metadata.AI.NeedsReview = confidence < s.cfg.MinConfidence || len(result.Issues) > 0
 
 	return confidence, nil
 }
@@ -239,7 +238,7 @@ func (s *OpenAIService) BatchProcess(ctx context.Context, tracks []*domain.Track
 			}
 
 			// Mark for review if confidence is low
-			track.NeedsReview = confidence < s.cfg.MinConfidence
+			track.Metadata.AI.NeedsReview = confidence < s.cfg.MinConfidence
 
 		}(tracks[i])
 	}

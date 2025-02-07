@@ -37,9 +37,10 @@ func NewOpenAIService(config *domain.OpenAIConfig) (*OpenAIService, error) {
 
 // EnrichMetadata enriches a track with AI-generated metadata
 func (s *OpenAIService) EnrichMetadata(ctx context.Context, track *domain.Track) error {
-	start := time.Now()
+	startTime := time.Now()
 	defer func() {
-		metrics.AIRequestDuration.WithLabelValues("openai").Observe(time.Since(start).Seconds())
+		duration := time.Since(startTime)
+		s.recordSuccess(duration)
 	}()
 
 	if track == nil {
@@ -50,24 +51,24 @@ func (s *OpenAIService) EnrichMetadata(ctx context.Context, track *domain.Track)
 		return fmt.Errorf("track audio data is required")
 	}
 
-	result, err := s.client.AnalyzeAudio(ctx, track.AudioData, track.AudioFormat)
+	// Analyze audio with OpenAI
+	result, err := s.client.AnalyzeAudio(ctx, track.AudioData, track.AudioFormat())
 	if err != nil {
 		s.recordFailure(err)
 		return fmt.Errorf("failed to analyze audio with OpenAI: %w", err)
 	}
 
 	// Update track's AI metadata
-	track.AIMetadata = &domain.AIMetadata{
-		Provider:     domain.AIProviderOpenAI,
-		Energy:       result.Energy,
-		Danceability: result.Danceability,
+	track.Metadata.AI = &domain.TrackAIMetadata{
+		Tags:         []string{},
+		Confidence:   result.Confidence,
+		Model:        "openai",
+		Version:      "v1",
 		ProcessedAt:  time.Now(),
-		ProcessingMs: time.Since(start).Milliseconds(),
 		NeedsReview:  result.Confidence < s.config.MinConfidence,
 		ReviewReason: result.ReviewReason,
 	}
 
-	s.recordSuccess(time.Since(start))
 	return nil
 }
 

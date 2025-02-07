@@ -7,11 +7,13 @@ import (
 	"metadatatool/internal/config"
 	"metadatatool/internal/pkg/domain"
 	"metadatatool/internal/pkg/metrics"
+	"metadatatool/internal/pkg/retry"
 	"strings"
 	"sync"
 	"time"
 
 	openai "github.com/sashabaranov/go-openai"
+	"github.com/sirupsen/logrus"
 )
 
 type OpenAIService struct {
@@ -57,7 +59,11 @@ Please provide the following in a structured format:
 5. Cultural context and era
 6. Production style characteristics
 7. Confidence score (0.0-1.0) for these predictions`,
-		track.Title, track.Artist, track.Album, track.Genre, track.Year)
+		track.Metadata.BasicTrackMetadata.Title,
+		track.Metadata.BasicTrackMetadata.Artist,
+		track.Metadata.BasicTrackMetadata.Album,
+		track.Metadata.Musical.Genre,
+		track.Metadata.BasicTrackMetadata.Year)
 
 	// Call OpenAI API
 	resp, err := s.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
@@ -91,40 +97,40 @@ Please provide the following in a structured format:
 	metrics.AIConfidenceScore.WithLabelValues("openai").Observe(confidence)
 
 	// Update track with AI metadata
-	track.AIMetadata = &domain.AIMetadata{
-		Provider:     domain.AIProviderOpenAI,
+	track.Metadata.AI = &domain.TrackAIMetadata{
+		Model:        s.cfg.ModelName,
+		Version:      s.cfg.ModelVersion,
 		ProcessedAt:  time.Now(),
-		ProcessingMs: time.Since(start).Milliseconds(),
 		NeedsReview:  confidence < s.cfg.MinConfidence,
 		ReviewReason: s.getReviewReason(confidence),
+		Confidence:   confidence,
 	}
 
-	// Parse and update specific fields
-	// Note: In a production environment, you'd want more robust parsing
-	if confidence >= s.cfg.MinConfidence {
-		// Extract and update relevant fields
-		// This is a simplified example - you'd want more robust parsing in production
-		if strings.Contains(content, "BPM:") {
-			if bpm, err := extractBPM(content); err == nil {
-				track.BPM = bpm
-			}
+	// Update musical metadata based on content analysis
+	if strings.Contains(content, "BPM:") {
+		if bpm, err := s.extractBPM(content); err == nil {
+			track.Metadata.Musical.BPM = bpm
 		}
-		if strings.Contains(content, "Key:") {
-			if key, err := extractKey(content); err == nil {
-				track.Key = key
-			}
+	}
+	if strings.Contains(content, "Key:") {
+		if key, err := s.extractKey(content); err == nil {
+			track.Metadata.Musical.Key = key
 		}
-		if strings.Contains(content, "Mood:") {
-			if mood, err := extractMood(content); err == nil {
-				track.Mood = mood
-			}
+	}
+	if strings.Contains(content, "Mood:") {
+		if mood, err := s.extractMood(content); err == nil {
+			track.Metadata.Musical.Mood = mood
 		}
-		// Extract genre if confidence is high
-		if strings.Contains(content, "Genre:") {
-			if genre, err := extractGenre(content); err == nil && track.Genre == "" {
-				track.Genre = genre
-			}
+	}
+	if strings.Contains(content, "Genre:") {
+		if genre, err := s.extractGenre(content); err == nil {
+			track.Metadata.Musical.Genre = genre
 		}
+	}
+
+	// Store similar artists in custom fields
+	if similarArtists, err := s.extractSimilarArtists(content); err == nil && len(similarArtists) > 0 {
+		track.Metadata.Additional.CustomTags["similar_artists"] = strings.Join(similarArtists, ",")
 	}
 
 	metrics.AIRequestTotal.WithLabelValues("openai", "success").Inc()
@@ -165,24 +171,115 @@ func (s *OpenAIService) getReviewReason(confidence float64) string {
 }
 
 // Helper functions for extracting specific metadata fields
-func extractBPM(content string) (float64, error) {
-	// Implement BPM extraction logic
-	return 0, fmt.Errorf("not implemented")
+func (s *OpenAIService) extractBPM(content string) (float64, error) {
+	// Look for BPM in the content
+	if strings.Contains(content, "BPM:") {
+		// Find the line containing BPM
+		lines := strings.Split(content, "\n")
+		for _, line := range lines {
+			if strings.Contains(line, "BPM:") {
+				// Try to parse the BPM value
+				var bpm float64
+				_, err := fmt.Sscanf(line, "BPM: %f", &bpm)
+				if err == nil && bpm > 0 {
+					return bpm, nil
+				}
+			}
+		}
+	}
+	return 0, fmt.Errorf("could not extract BPM from content")
 }
 
-func extractKey(content string) (string, error) {
-	// Implement musical key extraction logic
-	return "", fmt.Errorf("not implemented")
+func (s *OpenAIService) extractKey(content string) (string, error) {
+	// Look for musical key in the content
+	if strings.Contains(content, "Key:") {
+		lines := strings.Split(content, "\n")
+		for _, line := range lines {
+			if strings.Contains(line, "Key:") {
+				// Extract everything after "Key:"
+				parts := strings.SplitN(line, "Key:", 2)
+				if len(parts) == 2 {
+					key := strings.TrimSpace(parts[1])
+					if key != "" {
+						return key, nil
+					}
+				}
+			}
+		}
+	}
+	return "", fmt.Errorf("could not extract musical key from content")
 }
 
-func extractMood(content string) (string, error) {
-	// Implement mood extraction logic
-	return "", fmt.Errorf("not implemented")
+func (s *OpenAIService) extractMood(content string) (string, error) {
+	// Look for mood in the content
+	if strings.Contains(content, "Mood:") {
+		lines := strings.Split(content, "\n")
+		for _, line := range lines {
+			if strings.Contains(line, "Mood:") {
+				// Extract everything after "Mood:"
+				parts := strings.SplitN(line, "Mood:", 2)
+				if len(parts) == 2 {
+					mood := strings.TrimSpace(parts[1])
+					if mood != "" {
+						return mood, nil
+					}
+				}
+			}
+		}
+	}
+	return "", fmt.Errorf("could not extract mood from content")
 }
 
-func extractGenre(content string) (string, error) {
-	// Implement genre extraction logic
-	return "", fmt.Errorf("not implemented")
+func (s *OpenAIService) extractGenre(content string) (string, error) {
+	// Look for genre in the content
+	if strings.Contains(content, "Genre:") {
+		lines := strings.Split(content, "\n")
+		for _, line := range lines {
+			if strings.Contains(line, "Genre:") {
+				// Extract everything after "Genre:"
+				parts := strings.SplitN(line, "Genre:", 2)
+				if len(parts) == 2 {
+					genre := strings.TrimSpace(parts[1])
+					if genre != "" {
+						return genre, nil
+					}
+				}
+			}
+		}
+	}
+	return "", fmt.Errorf("could not extract genre from content")
+}
+
+func (s *OpenAIService) extractSimilarArtists(content string) ([]string, error) {
+	// Look for similar artists section in the content
+	if strings.Contains(content, "Similar artists:") {
+		lines := strings.Split(content, "\n")
+		var artists []string
+		inSimilarArtistsSection := false
+
+		for _, line := range lines {
+			if strings.Contains(line, "Similar artists:") {
+				inSimilarArtistsSection = true
+				continue
+			}
+			if inSimilarArtistsSection {
+				// Stop if we hit another section
+				if strings.Contains(line, ":") {
+					break
+				}
+				// Add non-empty lines as artists
+				artist := strings.TrimSpace(line)
+				if artist != "" {
+					artists = append(artists, artist)
+				}
+			}
+		}
+
+		if len(artists) > 0 {
+			return artists, nil
+		}
+	}
+	return nil, fmt.Errorf("could not extract similar artists from content")
 }
 
 // ValidateMetadata validates track metadata using AI
@@ -211,7 +308,14 @@ Please analyze this metadata and:
 4. Check mood classification
 5. Provide a confidence score (0.0-1.0) for the metadata accuracy
 6. List any specific issues found`,
-		track.Title, track.Artist, track.Album, track.Genre, track.Year, track.BPM, track.Key, track.Mood)
+		track.Metadata.BasicTrackMetadata.Title,
+		track.Metadata.BasicTrackMetadata.Artist,
+		track.Metadata.BasicTrackMetadata.Album,
+		track.Metadata.Musical.Genre,
+		track.Metadata.BasicTrackMetadata.Year,
+		track.Metadata.Musical.BPM,
+		track.Metadata.Musical.Key,
+		track.Metadata.Musical.Mood)
 
 	// Call OpenAI API
 	resp, err := s.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
@@ -242,15 +346,16 @@ Please analyze this metadata and:
 	metrics.AIConfidenceScore.WithLabelValues("openai").Observe(confidence)
 
 	// Update track's metadata with validation results
-	if track.AIMetadata == nil {
-		track.AIMetadata = &domain.AIMetadata{
-			Provider: domain.AIProviderOpenAI,
+	if track.Metadata.AI == nil {
+		track.Metadata.AI = &domain.TrackAIMetadata{
+			Model:   s.cfg.ModelName,
+			Version: s.cfg.ModelVersion,
 		}
 	}
-	track.AIMetadata.ProcessedAt = time.Now()
-	track.AIMetadata.ProcessingMs = time.Since(start).Milliseconds()
-	track.AIMetadata.NeedsReview = confidence < s.cfg.MinConfidence
-	track.AIMetadata.ReviewReason = s.getReviewReason(confidence)
+	track.Metadata.AI.ProcessedAt = time.Now()
+	track.Metadata.AI.NeedsReview = confidence < s.cfg.MinConfidence
+	track.Metadata.AI.ReviewReason = s.getReviewReason(confidence)
+	track.Metadata.AI.Confidence = confidence
 
 	metrics.AIRequestTotal.WithLabelValues("openai", "success").Inc()
 	return confidence, nil
@@ -276,50 +381,93 @@ func extractValidationIssues(content string) []string {
 	return issues
 }
 
-// BatchProcess processes multiple tracks in batch
+// BatchProcess processes multiple tracks in batch with retry logic and progress tracking
 func (s *OpenAIService) BatchProcess(ctx context.Context, tracks []*domain.Track) error {
 	if len(tracks) == 0 {
 		return nil
 	}
 
+	// Create channels for error handling and progress tracking
 	errChan := make(chan error, len(tracks))
+	progressChan := make(chan struct{}, s.cfg.BatchSize)
 	var wg sync.WaitGroup
 
+	// Start timer for metrics
+	timer := metrics.NewTimer(metrics.AIBatchProcessingDuration)
+	defer timer.ObserveDuration()
+
+	// Track batch metrics
+	metrics.BatchProcessingTotal.Inc()
+	defer func() {
+		metrics.TracksProcessedTotal.Add(float64(len(tracks)))
+	}()
+
+	// Process tracks in parallel with batch size limit
 	for i := range tracks {
 		wg.Add(1)
+		progressChan <- struct{}{} // Limit concurrent processing
+
 		go func(track *domain.Track) {
 			defer wg.Done()
+			defer func() { <-progressChan }()
 
-			if err := s.EnrichMetadata(ctx, track); err != nil {
-				errChan <- fmt.Errorf("failed to enrich track %s: %w", track.ID, err)
-				return
-			}
+			// Process with retry logic
+			err := retry.Do(
+				func() error {
+					// Enrich metadata
+					if err := s.EnrichMetadata(ctx, track); err != nil {
+						metrics.AIEnrichmentErrors.Inc()
+						return fmt.Errorf("failed to enrich track %s: %w", track.ID, err)
+					}
 
-			confidence, err := s.ValidateMetadata(ctx, track)
+					// Validate metadata
+					confidence, err := s.ValidateMetadata(ctx, track)
+					if err != nil {
+						metrics.AIValidationErrors.Inc()
+						return fmt.Errorf("failed to validate track %s: %w", track.ID, err)
+					}
+
+					// Update track status
+					track.Metadata.AI.NeedsReview = confidence < s.cfg.MinConfidence
+					track.Metadata.AI.ProcessedAt = time.Now()
+
+					return nil
+				},
+				retry.Attempts(3),
+				retry.Delay(1*time.Second),
+				retry.MaxDelay(5*time.Second),
+				retry.OnRetry(func(n uint, err error) {
+					metrics.AIRetryAttempts.Inc()
+					logrus.Printf("Retry %d for track %s: %v", n, track.ID, err)
+				}),
+			)
+
 			if err != nil {
-				errChan <- fmt.Errorf("failed to validate track %s: %w", track.ID, err)
-				return
+				errChan <- err
 			}
-
-			track.AIMetadata.NeedsReview = confidence < s.cfg.MinConfidence
 		}(tracks[i])
 	}
 
+	// Wait for all goroutines to finish
 	wg.Wait()
 	close(errChan)
+	close(progressChan)
 
+	// Collect and aggregate errors
 	var errors []error
 	for err := range errChan {
 		errors = append(errors, err)
+		metrics.AIBatchErrors.Inc()
 	}
 
+	// Return combined error if any occurred
 	if len(errors) > 0 {
 		var errMsg strings.Builder
-		errMsg.WriteString("batch processing encountered errors:\n")
+		errMsg.WriteString(fmt.Sprintf("batch processing encountered %d errors:\n", len(errors)))
 		for _, err := range errors {
 			errMsg.WriteString("- " + err.Error() + "\n")
 		}
-		return fmt.Errorf(errMsg.String())
+		return fmt.Errorf("batch processing errors: %s", errMsg.String())
 	}
 
 	return nil

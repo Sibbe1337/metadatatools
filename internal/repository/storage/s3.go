@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 	"fmt"
-	"io"
 	"metadatatool/internal/config"
 	"metadatatool/internal/pkg/domain"
 	"metadatatool/internal/pkg/metrics"
@@ -16,6 +15,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 type s3Storage struct {
@@ -57,45 +57,83 @@ func NewS3Storage(cfg *config.StorageConfig) (domain.StorageService, error) {
 	}, nil
 }
 
-// Upload stores a file in S3
-func (s *s3Storage) Upload(ctx context.Context, key string, data io.Reader) error {
-	timer := metrics.NewTimer(metrics.StorageOperationDuration.WithLabelValues("upload"))
+// Upload uploads a file to S3
+func (s *s3Storage) Upload(ctx context.Context, file *domain.StorageFile) error {
+	timer := metrics.NewTimer(metrics.AudioOpDurations.WithLabelValues("s3_upload"))
 	defer timer.ObserveDuration()
+
+	metrics.AudioOps.WithLabelValues("s3_upload", "started").Inc()
+
+	// Validate upload
+	if err := s.ValidateUpload(ctx, file.Name, file.Size, ""); err != nil {
+		metrics.AudioOpErrors.WithLabelValues("s3_upload", "validation_error").Inc()
+		return err
+	}
+
+	// Convert metadata to AWS format
+	awsMetadata := make(map[string]string)
+	for k, v := range file.Metadata {
+		awsMetadata[k] = v
+	}
 
 	// Upload file
 	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket: aws.String(s.bucket),
-		Key:    aws.String(key),
-		Body:   data,
+		Bucket:      aws.String(s.bucket),
+		Key:         aws.String(file.Key),
+		Body:        file.Content,
+		ContentType: aws.String(file.ContentType),
+		Metadata:    awsMetadata,
 	})
 
 	if err != nil {
-		metrics.StorageOperationErrors.WithLabelValues("upload").Inc()
-		return fmt.Errorf("failed to upload file: %w", err)
+		metrics.AudioOpErrors.WithLabelValues("s3_upload", "s3_error").Inc()
+		return fmt.Errorf("failed to upload to S3: %w", err)
 	}
 
-	metrics.StorageOperationSuccess.WithLabelValues("upload").Inc()
+	metrics.AudioOps.WithLabelValues("s3_upload", "completed").Inc()
 	return nil
 }
 
-// Download retrieves a file from S3
-func (s *s3Storage) Download(ctx context.Context, key string) (io.ReadCloser, error) {
-	timer := metrics.NewTimer(metrics.StorageOperationDuration.WithLabelValues("download"))
+// Download downloads a file from S3
+func (s *s3Storage) Download(ctx context.Context, key string) (*domain.StorageFile, error) {
+	timer := metrics.NewTimer(metrics.AudioOpDurations.WithLabelValues("s3_download"))
 	defer timer.ObserveDuration()
 
-	// Download file
+	metrics.AudioOps.WithLabelValues("s3_download", "started").Inc()
+
+	// Get object
 	result, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
 	})
 
 	if err != nil {
-		metrics.StorageOperationErrors.WithLabelValues("download").Inc()
-		return nil, fmt.Errorf("failed to download file: %w", err)
+		metrics.AudioOpErrors.WithLabelValues("s3_download", "s3_error").Inc()
+		return nil, fmt.Errorf("failed to download from S3: %w", err)
 	}
 
-	metrics.StorageOperationSuccess.WithLabelValues("download").Inc()
-	return result.Body, nil
+	// Convert metadata from AWS format
+	metadata := make(map[string]string)
+	for k, v := range result.Metadata {
+		metadata[k] = v
+	}
+
+	var size int64
+	if result.ContentLength != nil {
+		size = *result.ContentLength
+	}
+
+	file := &domain.StorageFile{
+		Key:         key,
+		Name:        filepath.Base(key),
+		Size:        size,
+		ContentType: aws.ToString(result.ContentType),
+		Content:     result.Body,
+		Metadata:    metadata,
+	}
+
+	metrics.AudioOps.WithLabelValues("s3_download", "completed").Inc()
+	return file, nil
 }
 
 // Delete removes a file from S3
@@ -118,10 +156,31 @@ func (s *s3Storage) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
-// GetSignedURL generates a pre-signed URL for direct upload/download
-func (s *s3Storage) GetSignedURL(ctx context.Context, key string, operation domain.SignedURLOperation, expiry time.Duration) (string, error) {
-	// TODO: Implement pre-signed URL generation
-	return "", fmt.Errorf("not implemented")
+// GetURL generates a pre-signed URL for the file
+func (s *s3Storage) GetURL(ctx context.Context, key string) (string, error) {
+	timer := metrics.NewTimer(metrics.AudioOpDurations.WithLabelValues("s3_get_url"))
+	defer timer.ObserveDuration()
+
+	metrics.AudioOps.WithLabelValues("s3_get_url", "started").Inc()
+
+	// Create presigner
+	presigner := s3.NewPresignClient(s.client)
+
+	// Generate presigned URL
+	request, err := presigner.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	}, func(opts *s3.PresignOptions) {
+		opts.Expires = time.Duration(15 * time.Minute)
+	})
+
+	if err != nil {
+		metrics.AudioOpErrors.WithLabelValues("s3_get_url", "presign_error").Inc()
+		return "", fmt.Errorf("failed to generate presigned URL: %w", err)
+	}
+
+	metrics.AudioOps.WithLabelValues("s3_get_url", "completed").Inc()
+	return request.URL, nil
 }
 
 // GetMetadata retrieves metadata for a file
@@ -262,33 +321,71 @@ func (s *s3Storage) CleanupTempFiles(ctx context.Context) error {
 	timer := metrics.NewTimer(metrics.StorageOperationDuration.WithLabelValues("cleanup"))
 	defer timer.ObserveDuration()
 
-	var tempFiles int
+	var deletedCount int64
+	var totalSize int64
 
+	// List all temporary files
 	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
 		Bucket: aws.String(s.bucket),
-		Prefix: aws.String("temp/"),
+		Prefix: aws.String(domain.StoragePathTemp),
 	})
+
+	now := time.Now()
+	var objectsToDelete []types.ObjectIdentifier
 
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
 			metrics.StorageOperationErrors.WithLabelValues("cleanup").Inc()
-			return fmt.Errorf("failed to list temp files: %w", err)
+			return fmt.Errorf("failed to list temporary files: %w", err)
 		}
 
 		for _, obj := range page.Contents {
-			if time.Since(*obj.LastModified) > s.cfg.TempFileExpiry {
-				err := s.Delete(ctx, aws.ToString(obj.Key))
-				if err != nil {
-					metrics.StorageOperationErrors.WithLabelValues("cleanup").Inc()
-					continue
+			// Check if file is expired based on LastModified
+			if now.Sub(*obj.LastModified) > s.cfg.TempFileExpiry {
+				objectsToDelete = append(objectsToDelete, types.ObjectIdentifier{
+					Key: obj.Key,
+				})
+				deletedCount++
+				totalSize += aws.ToInt64(obj.Size)
+
+				// Delete in batches of 1000 (S3 limit)
+				if len(objectsToDelete) >= 1000 {
+					if err := s.deleteObjects(ctx, objectsToDelete); err != nil {
+						return err
+					}
+					objectsToDelete = objectsToDelete[:0]
 				}
-				tempFiles++
 			}
 		}
 	}
 
-	metrics.StorageTempFileCount.Set(float64(tempFiles))
+	// Delete any remaining objects
+	if len(objectsToDelete) > 0 {
+		if err := s.deleteObjects(ctx, objectsToDelete); err != nil {
+			return err
+		}
+	}
+
+	metrics.StorageCleanupFilesDeleted.Add(float64(deletedCount))
+	metrics.StorageCleanupBytesReclaimed.Add(float64(totalSize))
 	metrics.StorageOperationSuccess.WithLabelValues("cleanup").Inc()
+
+	return nil
+}
+
+// deleteObjects deletes a batch of objects from S3
+func (s *s3Storage) deleteObjects(ctx context.Context, objects []types.ObjectIdentifier) error {
+	_, err := s.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+		Bucket: aws.String(s.bucket),
+		Delete: &types.Delete{
+			Objects: objects,
+			Quiet:   aws.Bool(true),
+		},
+	})
+	if err != nil {
+		metrics.StorageOperationErrors.WithLabelValues("cleanup_batch").Inc()
+		return fmt.Errorf("failed to delete objects batch: %w", err)
+	}
 	return nil
 }

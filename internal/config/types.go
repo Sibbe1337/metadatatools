@@ -11,6 +11,7 @@ type Config struct {
 	Auth     AuthConfig
 	AI       AIConfig
 	Storage  StorageConfig
+	Jobs     JobConfig
 }
 
 // ServerConfig holds server-related settings
@@ -99,6 +100,30 @@ type StorageConfig struct {
 	UploadTimeout    time.Duration // timeout for upload operations
 }
 
+// JobConfig holds job queue settings
+type JobConfig struct {
+	// Worker settings
+	NumWorkers    int           `env:"JOB_NUM_WORKERS" envDefault:"5"`
+	MaxConcurrent int           `env:"JOB_MAX_CONCURRENT" envDefault:"10"`
+	PollInterval  time.Duration `env:"JOB_POLL_INTERVAL" envDefault:"1s"`
+	ShutdownWait  time.Duration `env:"JOB_SHUTDOWN_WAIT" envDefault:"30s"`
+
+	// Job settings
+	DefaultMaxRetries int           `env:"JOB_DEFAULT_MAX_RETRIES" envDefault:"3"`
+	DefaultTTL        time.Duration `env:"JOB_DEFAULT_TTL" envDefault:"24h"`
+	MaxPayloadSize    int64         `env:"JOB_MAX_PAYLOAD_SIZE" envDefault:"1048576"` // 1MB
+
+	// Queue settings
+	QueuePrefix     string        `env:"JOB_QUEUE_PREFIX" envDefault:"jobs:"`
+	RetryDelay      time.Duration `env:"JOB_RETRY_DELAY" envDefault:"5s"`
+	MaxRetryDelay   time.Duration `env:"JOB_MAX_RETRY_DELAY" envDefault:"1h"`
+	RetryMultiplier float64       `env:"JOB_RETRY_MULTIPLIER" envDefault:"2.0"`
+
+	// Cleanup settings
+	CleanupInterval time.Duration `env:"JOB_CLEANUP_INTERVAL" envDefault:"1h"`
+	MaxJobAge       time.Duration `env:"JOB_MAX_AGE" envDefault:"168h"` // 7 days
+}
+
 // DefaultStorageConfig returns a default storage configuration
 func DefaultStorageConfig() *StorageConfig {
 	return &StorageConfig{
@@ -121,5 +146,67 @@ func DefaultStorageConfig() *StorageConfig {
 		UploadBufferSize: 1 * 1024 * 1024, // 1MB
 		DownloadTimeout:  5 * time.Minute,
 		UploadTimeout:    10 * time.Minute,
+	}
+}
+
+// DefaultConfig returns a configuration with default values
+func DefaultConfig() *Config {
+	return &Config{
+		Server: ServerConfig{
+			Port:        8080,
+			Environment: "development",
+			LogLevel:    "info",
+		},
+		Database: DatabaseConfig{
+			Host:     "localhost",
+			Port:     5432,
+			User:     "postgres",
+			Password: "",
+			DBName:   "metadatatool",
+			SSLMode:  "disable",
+		},
+		Redis: RedisConfig{
+			Enabled:  true,
+			Host:     "localhost",
+			Port:     6379,
+			Password: "",
+			DB:       0,
+		},
+		Auth: AuthConfig{
+			AccessTokenExpiry:   15 * time.Minute,
+			RefreshTokenExpiry:  7 * 24 * time.Hour,
+			APIKeyLength:        32,
+			PasswordMinLength:   8,
+			PasswordHashCost:    10,
+			MaxLoginAttempts:    5,
+			LockoutDuration:     15 * time.Minute,
+			SessionTimeout:      24 * time.Hour,
+			EnableTwoFactor:     false,
+			RequireStrongPasswd: true,
+		},
+		AI: AIConfig{
+			ModelName:     "gpt-4",
+			Temperature:   0.7,
+			MaxTokens:     2048,
+			BatchSize:     10,
+			MinConfidence: 0.85,
+			Timeout:       30 * time.Second,
+		},
+		Storage: *DefaultStorageConfig(),
+		Jobs: JobConfig{
+			NumWorkers:        5,
+			MaxConcurrent:     10,
+			PollInterval:      time.Second,
+			ShutdownWait:      30 * time.Second,
+			DefaultMaxRetries: 3,
+			DefaultTTL:        24 * time.Hour,
+			MaxPayloadSize:    1024 * 1024, // 1MB
+			QueuePrefix:       "jobs:",
+			RetryDelay:        5 * time.Second,
+			MaxRetryDelay:     time.Hour,
+			RetryMultiplier:   2.0,
+			CleanupInterval:   time.Hour,
+			MaxJobAge:         7 * 24 * time.Hour,
+		},
 	}
 }

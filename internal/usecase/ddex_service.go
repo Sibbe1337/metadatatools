@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
+	"math"
 	"metadatatool/internal/pkg/domain"
 	"time"
 
@@ -24,32 +25,32 @@ func (s *ddexService) ValidateTrack(ctx context.Context, track *domain.Track) (b
 	var validationErrors []string
 
 	// Validate required fields
-	if track.ISRC == "" {
+	if track.ISRC() == "" {
 		validationErrors = append(validationErrors, "ISRC is required")
-	} else if len(track.ISRC) != 12 {
+	} else if len(track.ISRC()) != 12 {
 		validationErrors = append(validationErrors, "ISRC must be 12 characters")
 	}
 
-	if track.Title == "" {
+	if track.Title() == "" {
 		validationErrors = append(validationErrors, "Title is required")
 	}
 
-	if track.Artist == "" {
+	if track.Artist() == "" {
 		validationErrors = append(validationErrors, "Artist is required")
 	}
 
-	if track.Label == "" {
+	if track.Label() == "" {
 		validationErrors = append(validationErrors, "Label is required")
 	}
 
-	if track.Territory == "" {
+	if track.Territory() == "" {
 		validationErrors = append(validationErrors, "Territory is required")
-	} else if len(track.Territory) != 2 {
+	} else if len(track.Territory()) != 2 {
 		validationErrors = append(validationErrors, "Territory must be a 2-letter ISO country code")
 	}
 
 	// Validate format-specific fields
-	if track.Year < 1900 || track.Year > time.Now().Year() {
+	if track.Year() < 1900 || track.Year() > time.Now().Year() {
 		validationErrors = append(validationErrors, "Invalid release year")
 	}
 
@@ -108,12 +109,15 @@ func (s *ddexService) createERNMessage(tracks []*domain.Track) *domain.ERNMessag
 	// Add resources
 	var soundRecordings []domain.SoundRecording
 	for _, track := range tracks {
+		// Convert duration to integer seconds
+		durationSecs := int(math.Round(track.Duration()))
+
 		soundRecording := domain.SoundRecording{
-			ISRC: track.ISRC,
+			ISRC: track.ISRC(),
 			Title: domain.Title{
-				TitleText: track.Title,
+				TitleText: track.Title(),
 			},
-			Duration: fmt.Sprintf("PT%dS", int(track.Duration)),
+			Duration: fmt.Sprintf("PT%dS", durationSecs),
 			TechnicalDetails: domain.TechnicalDetails{
 				TechnicalResourceDetailsReference: track.ID,
 				Audio: domain.Audio{
@@ -134,10 +138,10 @@ func (s *ddexService) createERNMessage(tracks []*domain.Track) *domain.ERNMessag
 	for _, track := range tracks {
 		release := domain.Release{
 			ReleaseID: domain.ReleaseID{
-				ICPN: track.ID, // Use track ID as ICPN for now
+				ICPN: track.ID,
 			},
 			ReferenceTitle: domain.Title{
-				TitleText: track.Title,
+				TitleText: track.Title(),
 			},
 			ReleaseType: "Single",
 		}
@@ -146,13 +150,13 @@ func (s *ddexService) createERNMessage(tracks []*domain.Track) *domain.ERNMessag
 	message.ReleaseList.Releases = releases
 
 	// Add deals
-	var releaseDeals []domain.ReleaseDeal
+	var deals []domain.ReleaseDeal
 	for _, track := range tracks {
-		releaseDeal := domain.ReleaseDeal{
+		deal := domain.ReleaseDeal{
 			DealReleaseReference: track.ID,
 			Deal: domain.Deal{
 				Territory: domain.Territory{
-					TerritoryCode: track.Territory,
+					TerritoryCode: track.Territory(),
 				},
 				DealTerms: domain.DealTerms{
 					CommercialModelType: "PayAsYouGoModel",
@@ -162,9 +166,9 @@ func (s *ddexService) createERNMessage(tracks []*domain.Track) *domain.ERNMessag
 				},
 			},
 		}
-		releaseDeals = append(releaseDeals, releaseDeal)
+		deals = append(deals, deal)
 	}
-	message.DealList.ReleaseDeals = releaseDeals
+	message.DealList.ReleaseDeals = deals
 
 	return message
 }

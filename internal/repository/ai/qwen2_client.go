@@ -186,10 +186,30 @@ func (c *Qwen2Client) AnalyzeAudio(ctx context.Context, audioData []byte, format
 func (c *Qwen2Client) ValidateMetadata(ctx context.Context, track *domain.Track) (float64, error) {
 	url := fmt.Sprintf("%s/v1/metadata/validate", c.config.Endpoint)
 
+	// Convert CompleteTrackMetadata to Metadata
+	metadata := &domain.Metadata{
+		ISRC:         track.ISRC(),
+		ISWC:         track.ISWC(),
+		BPM:          track.BPM(),
+		Key:          track.Key(),
+		Mood:         track.Mood(),
+		Labels:       []string{},
+		AITags:       track.AITags(),
+		Confidence:   track.AIConfidence(),
+		ModelVersion: track.ModelVersion(),
+		CustomFields: track.Metadata.Additional.CustomFields,
+	}
+
+	// Convert custom tags to labels
+	for tag := range track.Metadata.Additional.CustomTags {
+		metadata.Labels = append(metadata.Labels, tag)
+	}
+
+	// Prepare request body
 	body := struct {
-		Metadata domain.Metadata `json:"metadata"`
+		Metadata *domain.Metadata `json:"metadata"`
 	}{
-		Metadata: track.Metadata,
+		Metadata: metadata,
 	}
 
 	respBody, err := c.sendRequest(ctx, "POST", url, body)
@@ -229,28 +249,49 @@ func (c *Qwen2Client) BatchAnalyzeAudio(ctx context.Context, requests []struct {
 
 // BatchValidateMetadata validates multiple tracks' metadata in a single request
 func (c *Qwen2Client) BatchValidateMetadata(ctx context.Context, tracks []*domain.Track) ([]float64, error) {
-	url := fmt.Sprintf("%s/v1/metadata/batch/validate", c.config.Endpoint)
+	url := fmt.Sprintf("%s/v1/metadata/validate/batch", c.config.Endpoint)
 
-	body := struct {
-		Tracks []domain.Metadata `json:"tracks"`
-	}{
-		Tracks: make([]domain.Metadata, len(tracks)),
+	// Convert tracks metadata
+	metadataList := make([]*domain.Metadata, len(tracks))
+	for i, track := range tracks {
+		metadata := &domain.Metadata{
+			ISRC:         track.ISRC(),
+			ISWC:         track.ISWC(),
+			BPM:          track.BPM(),
+			Key:          track.Key(),
+			Mood:         track.Mood(),
+			Labels:       []string{},
+			AITags:       track.AITags(),
+			Confidence:   track.AIConfidence(),
+			ModelVersion: track.ModelVersion(),
+			CustomFields: track.Metadata.Additional.CustomFields,
+		}
+
+		// Convert custom tags to labels
+		for tag := range track.Metadata.Additional.CustomTags {
+			metadata.Labels = append(metadata.Labels, tag)
+		}
+
+		metadataList[i] = metadata
 	}
 
-	for i, track := range tracks {
-		body.Tracks[i] = track.Metadata
+	// Prepare request body
+	body := struct {
+		Tracks []*domain.Metadata `json:"tracks"`
+	}{
+		Tracks: metadataList,
 	}
 
 	respBody, err := c.sendRequest(ctx, "POST", url, body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to batch validate metadata: %w", err)
+		return nil, fmt.Errorf("failed to validate metadata batch: %w", err)
 	}
 
 	var result struct {
 		Confidences []float64 `json:"confidences"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse batch validation response: %w", err)
+		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
 	return result.Confidences, nil

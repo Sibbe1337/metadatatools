@@ -133,7 +133,7 @@ func (h *DDEXHandler) ImportERN(c *gin.Context) {
 // @Router /ddex/export [post]
 func (h *DDEXHandler) ExportERN(c *gin.Context) {
 	// Get all tracks
-	tracks, err := h.trackRepo.List(c, 0, 1000) // TODO: Add pagination
+	tracks, err := h.trackRepo.List(c, map[string]interface{}{}, 0, 1000) // TODO: Add pagination
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "failed to get tracks",
@@ -196,9 +196,12 @@ func convertERNToTracks(ern *domain.ERNMessage) []*domain.Track {
 
 	for _, recording := range ern.ResourceList.SoundRecordings {
 		track := &domain.Track{
-			Title: recording.Title.TitleText,
-			ISRC:  recording.ISRC,
-			// Add more fields as needed
+			Metadata: domain.CompleteTrackMetadata{
+				BasicTrackMetadata: domain.BasicTrackMetadata{
+					Title: recording.Title.TitleText,
+					ISRC:  recording.ISRC,
+				},
+			},
 		}
 		tracks = append(tracks, track)
 	}
@@ -219,8 +222,8 @@ func convertTracksToERN(tracks []*domain.Track) *domain.ERNMessage {
 	// Add resources
 	for _, track := range tracks {
 		recording := domain.SoundRecording{
-			ISRC:  track.ISRC,
-			Title: domain.Title{TitleText: track.Title},
+			ISRC:  track.ISRC(),
+			Title: domain.Title{TitleText: track.Title()},
 			// Add more fields as needed
 		}
 		ern.ResourceList.SoundRecordings = append(ern.ResourceList.SoundRecordings, recording)

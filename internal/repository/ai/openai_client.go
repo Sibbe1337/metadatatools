@@ -106,11 +106,30 @@ func (c *OpenAIClient) AnalyzeAudio(ctx context.Context, audioData []byte, forma
 func (c *OpenAIClient) ValidateMetadata(ctx context.Context, track *domain.Track) (float64, error) {
 	url := fmt.Sprintf("%s/v1/metadata/validate", c.config.Endpoint)
 
+	// Convert CompleteTrackMetadata to Metadata
+	metadata := &domain.Metadata{
+		ISRC:         track.ISRC(),
+		ISWC:         track.ISWC(),
+		BPM:          track.BPM(),
+		Key:          track.Key(),
+		Mood:         track.Mood(),
+		Labels:       []string{},
+		AITags:       track.AITags(),
+		Confidence:   track.AIConfidence(),
+		ModelVersion: track.ModelVersion(),
+		CustomFields: track.Metadata.Additional.CustomFields,
+	}
+
+	// Convert custom tags to labels
+	for tag := range track.Metadata.Additional.CustomTags {
+		metadata.Labels = append(metadata.Labels, tag)
+	}
+
 	// Prepare request body
 	body := struct {
-		Metadata domain.Metadata `json:"metadata"`
+		Metadata *domain.Metadata `json:"metadata"`
 	}{
-		Metadata: track.Metadata,
+		Metadata: metadata,
 	}
 
 	jsonBody, err := json.Marshal(body)
@@ -134,15 +153,10 @@ func (c *OpenAIClient) ValidateMetadata(ctx context.Context, track *domain.Track
 	}
 	defer resp.Body.Close()
 
-	// Read response body
+	// Read response
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return 0, fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	// Check response status
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("OpenAI API error: %s (status code: %d)", string(respBody), resp.StatusCode)
+		return 0, fmt.Errorf("failed to read response: %w", err)
 	}
 
 	// Parse response

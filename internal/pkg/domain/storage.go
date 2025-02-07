@@ -67,25 +67,33 @@ func (e *StorageError) Error() string {
 	return fmt.Sprintf("%s: %s (%s)", e.Op, e.Message, e.Code)
 }
 
-// StorageService defines the interface for cloud storage operations
+// StorageService defines the interface for storage operations
 type StorageService interface {
 	// Upload stores a file in cloud storage
-	Upload(ctx context.Context, key string, data io.Reader) error
+	Upload(ctx context.Context, file *StorageFile) error
 
 	// Download retrieves a file from cloud storage
-	Download(ctx context.Context, key string) (io.ReadCloser, error)
+	Download(ctx context.Context, key string) (*StorageFile, error)
 
 	// Delete removes a file from cloud storage
 	Delete(ctx context.Context, key string) error
 
-	// GetSignedURL generates a pre-signed URL for direct upload/download
-	GetSignedURL(ctx context.Context, key string, operation SignedURLOperation, expiry time.Duration) (string, error)
+	// GetURL retrieves a pre-signed URL for an audio file
+	GetURL(ctx context.Context, key string) (string, error)
 
-	// New methods
+	// GetMetadata retrieves metadata for a file
 	GetMetadata(ctx context.Context, key string) (*FileMetadata, error)
+
+	// ListFiles lists files with the given prefix
 	ListFiles(ctx context.Context, prefix string) ([]*FileMetadata, error)
+
+	// GetQuotaUsage gets storage usage for a user
 	GetQuotaUsage(ctx context.Context, userID string) (int64, error)
+
+	// ValidateUpload validates if a file can be uploaded
 	ValidateUpload(ctx context.Context, filename string, size int64, userID string) error
+
+	// CleanupTempFiles cleans up temporary files
 	CleanupTempFiles(ctx context.Context) error
 }
 

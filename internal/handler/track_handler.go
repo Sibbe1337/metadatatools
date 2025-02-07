@@ -78,14 +78,22 @@ func (h *TrackHandler) UploadTrack(c *gin.Context) {
 	}
 
 	track := &domain.Track{
-		Title:       c.PostForm("title"),
-		Artist:      c.PostForm("artist"),
-		Album:       c.PostForm("album"),
-		FilePath:    filepath,
-		AudioFormat: utils.GetAudioFormat(file.Filename),
+		StoragePath: filepath,
 		FileSize:    file.Size,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
+		Metadata: domain.CompleteTrackMetadata{
+			BasicTrackMetadata: domain.BasicTrackMetadata{
+				Title:     c.PostForm("title"),
+				Artist:    c.PostForm("artist"),
+				Album:     c.PostForm("album"),
+				CreatedAt: time.Now(),
+				UpdatedAt: time.Now(),
+			},
+			Technical: domain.AudioTechnicalMetadata{
+				Format: domain.AudioFormat(utils.GetAudioFormat(file.Filename)),
+			},
+		},
 	}
 
 	if err := validateTrack(track); err != nil {
@@ -292,7 +300,7 @@ func (h *TrackHandler) ListTracks(c *gin.Context) {
 
 	offset := (page - 1) * limit
 
-	tracks, err := h.trackRepo.List(c, offset, limit)
+	tracks, err := h.trackRepo.List(c, map[string]interface{}{}, offset, limit)
 	if err != nil {
 		h.handleError(c, http.StatusInternalServerError, "failed to list tracks", err)
 		return
@@ -429,11 +437,11 @@ func (h *TrackHandler) ExportTracks(c *gin.Context) {
 		for _, track := range tracks {
 			row := []string{
 				track.ID,
-				track.Title,
-				track.Artist,
-				track.Album,
-				track.ISRC,
-				fmt.Sprintf("%.2f", track.Duration),
+				track.Title(),
+				track.Artist(),
+				track.Album(),
+				track.ISRC(),
+				fmt.Sprintf("%d", int(track.Duration())),
 				track.CreatedAt.Format(time.RFC3339),
 			}
 			csvData = append(csvData, row)
@@ -535,16 +543,16 @@ func (h *TrackHandler) handleError(c *gin.Context, status int, message string, e
 }
 
 func validateTrack(track *domain.Track) error {
-	if track.Title == "" {
+	if track.Title() == "" {
 		return fmt.Errorf("title is required")
 	}
-	if track.Artist == "" {
+	if track.Artist() == "" {
 		return fmt.Errorf("artist is required")
 	}
-	if track.ISRC != "" && len(track.ISRC) != 12 {
+	if track.ISRC() != "" && len(track.ISRC()) != 12 {
 		return fmt.Errorf("ISRC must be 12 characters")
 	}
-	if track.ISWC != "" && len(track.ISWC) != 11 {
+	if track.ISWC() != "" && len(track.ISWC()) != 11 {
 		return fmt.Errorf("ISWC must be 11 characters")
 	}
 	return nil
