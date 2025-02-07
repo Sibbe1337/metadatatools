@@ -9,14 +9,20 @@ import (
 )
 
 type AuthHandler struct {
-	authService domain.AuthService
-	userRepo    domain.UserRepository
+	authService  domain.AuthService
+	userRepo     domain.UserRepository
+	sessionStore domain.SessionStore
 }
 
-func NewAuthHandler(authService domain.AuthService, userRepo domain.UserRepository) *AuthHandler {
+func NewAuthHandler(
+	authService domain.AuthService,
+	userRepo domain.UserRepository,
+	sessionStore domain.SessionStore,
+) *AuthHandler {
 	return &AuthHandler{
-		authService: authService,
-		userRepo:    userRepo,
+		authService:  authService,
+		userRepo:     userRepo,
+		sessionStore: sessionStore,
 	}
 }
 
@@ -161,6 +167,31 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	})
 }
 
+// Logout handles user logout
+func (h *AuthHandler) Logout(c *gin.Context) {
+	// Get session from context
+	session, exists := c.Get("session")
+	if !exists {
+		c.JSON(http.StatusOK, gin.H{
+			"message": "logged out",
+		})
+		return
+	}
+
+	// Delete session
+	currentSession := session.(*domain.Session)
+	if err := h.sessionStore.Delete(c, currentSession.ID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "failed to delete session",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "logged out",
+	})
+}
+
 // RefreshToken handles token refresh
 func (h *AuthHandler) RefreshToken(c *gin.Context) {
 	refreshToken := c.GetHeader("X-Refresh-Token")
@@ -221,5 +252,107 @@ func (h *AuthHandler) GenerateAPIKey(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"api_key": apiKey,
+	})
+}
+
+// GetActiveSessions returns all active sessions for the current user
+func (h *AuthHandler) GetActiveSessions(c *gin.Context) {
+	claims, exists := c.Get("user")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "unauthorized",
+		})
+		return
+	}
+	userClaims := claims.(*domain.Claims)
+
+	sessions, err := h.sessionStore.GetUserSessions(c, userClaims.UserID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "failed to get sessions",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"sessions": sessions,
+	})
+}
+
+// RevokeSession revokes a specific session
+func (h *AuthHandler) RevokeSession(c *gin.Context) {
+	sessionID := c.Param("id")
+	if sessionID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "missing session ID",
+		})
+		return
+	}
+
+	claims, exists := c.Get("user")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "unauthorized",
+		})
+		return
+	}
+	userClaims := claims.(*domain.Claims)
+
+	// Get session to verify ownership
+	session, err := h.sessionStore.Get(c, sessionID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "failed to get session",
+		})
+		return
+	}
+	if session == nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "session not found",
+		})
+		return
+	}
+
+	// Verify session belongs to user
+	if session.UserID != userClaims.UserID {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "cannot revoke other user's session",
+		})
+		return
+	}
+
+	// Delete session
+	if err := h.sessionStore.Delete(c, sessionID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "failed to revoke session",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "session revoked",
+	})
+}
+
+// RevokeAllSessions revokes all sessions for the current user
+func (h *AuthHandler) RevokeAllSessions(c *gin.Context) {
+	claims, exists := c.Get("user")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "unauthorized",
+		})
+		return
+	}
+	userClaims := claims.(*domain.Claims)
+
+	if err := h.sessionStore.DeleteUserSessions(c, userClaims.UserID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "failed to revoke sessions",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "all sessions revoked",
 	})
 }

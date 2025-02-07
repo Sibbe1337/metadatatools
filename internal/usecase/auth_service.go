@@ -27,12 +27,16 @@ func NewAuthService(cfg *config.AuthConfig, userRepo domain.UserRepository) doma
 
 // GenerateTokens creates a new pair of access and refresh tokens
 func (s *authService) GenerateTokens(user *domain.User) (*domain.TokenPair, error) {
-	// Create access token
+	// Get permissions for the user's role
+	permissions := s.GetPermissions(user.Role)
+
+	// Create access token with permissions
 	accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"user_id": user.ID,
-		"email":   user.Email,
-		"role":    user.Role,
-		"exp":     time.Now().Add(s.cfg.AccessTokenExpiry).Unix(),
+		"user_id":     user.ID,
+		"email":       user.Email,
+		"role":        user.Role,
+		"permissions": permissions,
+		"exp":         time.Now().Add(s.cfg.AccessTokenExpiry).Unix(),
 	})
 
 	accessTokenString, err := accessToken.SignedString([]byte(s.cfg.JWTSecret))
@@ -71,10 +75,21 @@ func (s *authService) ValidateToken(tokenString string) (*domain.Claims, error) 
 	}
 
 	if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
+		// Extract permissions from the token
+		var permissions []domain.Permission
+		if perms, ok := claims["permissions"].([]interface{}); ok {
+			for _, p := range perms {
+				if pStr, ok := p.(string); ok {
+					permissions = append(permissions, domain.Permission(pStr))
+				}
+			}
+		}
+
 		return &domain.Claims{
-			UserID: claims["user_id"].(string),
-			Email:  claims["email"].(string),
-			Role:   domain.Role(claims["role"].(string)),
+			UserID:      claims["user_id"].(string),
+			Email:       claims["email"].(string),
+			Role:        domain.Role(claims["role"].(string)),
+			Permissions: permissions,
 		}, nil
 	}
 
@@ -118,4 +133,20 @@ func (s *authService) VerifyPassword(hashedPassword, password string) error {
 // GenerateAPIKey creates a new API key
 func (s *authService) GenerateAPIKey() (string, error) {
 	return uuid.NewString(), nil
+}
+
+// HasPermission checks if a role has a specific permission
+func (s *authService) HasPermission(role domain.Role, permission domain.Permission) bool {
+	permissions := domain.RolePermissions[role]
+	for _, p := range permissions {
+		if p == permission {
+			return true
+		}
+	}
+	return false
+}
+
+// GetPermissions returns all permissions for a role
+func (s *authService) GetPermissions(role domain.Role) []domain.Permission {
+	return domain.RolePermissions[role]
 }

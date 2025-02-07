@@ -7,13 +7,14 @@ import (
 	"log"
 	"metadatatool/internal/config"
 	"metadatatool/internal/handler"
+	"metadatatool/internal/handler/middleware"
 	"metadatatool/internal/pkg/domain"
 	"metadatatool/internal/pkg/errortracking"
 	"metadatatool/internal/pkg/logger"
-	"metadatatool/internal/pkg/middleware"
 	"metadatatool/internal/pkg/storage"
 	"metadatatool/internal/repository/base"
 	"metadatatool/internal/repository/cached"
+	redisrepo "metadatatool/internal/repository/redis"
 	"metadatatool/internal/usecase"
 	"net/http"
 	"os"
@@ -22,7 +23,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	goredis "github.com/go-redis/redis/v8"
+	"github.com/go-redis/redis/v8"
 	_ "github.com/lib/pq"
 )
 
@@ -40,7 +41,7 @@ func main() {
 	errorTracker := errortracking.NewErrorTracker()
 
 	// Initialize Redis client
-	redisClient := goredis.NewClient(&goredis.Options{
+	redisClient := redis.NewClient(&redis.Options{
 		Addr:     fmt.Sprintf("%s:%d", cfg.Redis.Host, cfg.Redis.Port),
 		Password: cfg.Redis.Password,
 		DB:       cfg.Redis.DB,
@@ -76,6 +77,14 @@ func main() {
 		log.Fatalf("Failed to initialize storage service: %v", err)
 	}
 
+	// Initialize session store
+	sessionConfig := &domain.SessionConfig{
+		SessionDuration:    24 * time.Hour, // Sessions last 24 hours
+		CleanupInterval:    time.Hour,      // Cleanup every hour
+		MaxSessionsPerUser: 5,              // Max 5 concurrent sessions per user
+	}
+	sessionStore := redisrepo.NewSessionStore(redisClient, sessionConfig)
+
 	// Initialize AI service
 	aiService, err := usecase.NewOpenAIService(&cfg.AI)
 	if err != nil {
@@ -96,7 +105,7 @@ func main() {
 
 	// Initialize handlers
 	healthHandler := handler.NewHealthHandler(redisClient)
-	authHandler := handler.NewAuthHandler(authService, userRepo)
+	authHandler := handler.NewAuthHandler(authService, userRepo, sessionStore)
 	audioHandler := handler.NewAudioHandler(storageService, trackRepo)
 	ddexHandler := handler.NewDDEXHandler(trackRepo)
 	metricsHandler := handler.NewMetricsHandler()
@@ -117,6 +126,8 @@ func main() {
 		authService,
 		userRepo,
 		redisClient,
+		sessionStore,
+		sessionConfig,
 	)
 
 	// Start server
@@ -156,13 +167,13 @@ func initRoutes(
 	metricsHandler *handler.MetricsHandler,
 	authService domain.AuthService,
 	userRepo domain.UserRepository,
-	redisClient *goredis.Client,
+	redisClient *redis.Client,
+	sessionStore domain.SessionStore,
+	sessionConfig *domain.SessionConfig,
 ) {
-	// Add metrics middleware to all routes
-	router.Use(middleware.MetricsMiddleware())
-	router.Use(middleware.DatabaseMetricsMiddleware())
-	router.Use(middleware.AIMetricsMiddleware())
-	router.Use(middleware.CacheMetricsMiddleware())
+	// Add basic middleware
+	router.Use(gin.Logger())
+	router.Use(gin.Recovery())
 
 	// Metrics endpoints
 	router.GET("/metrics", metricsHandler.PrometheusHandler())
@@ -175,32 +186,35 @@ func initRoutes(
 	auth := router.Group("/api/v1/auth")
 	{
 		auth.POST("/register", authHandler.Register)
-		auth.POST("/login", authHandler.Login)
+		auth.POST("/login", middleware.CreateSession(sessionStore, sessionConfig), authHandler.Login)
 		auth.POST("/refresh", authHandler.RefreshToken)
+		auth.POST("/logout", middleware.ClearSession(sessionStore), authHandler.Logout)
+
+		// Session management routes (protected)
+		sessions := auth.Group("")
+		sessions.Use(middleware.Auth(authService))
+		sessions.Use(middleware.Session(sessionStore, sessionConfig))
+		{
+			sessions.GET("/sessions", authHandler.GetActiveSessions)
+			sessions.DELETE("/sessions/:id", authHandler.RevokeSession)
+			sessions.DELETE("/sessions", authHandler.RevokeAllSessions)
+		}
 	}
 
 	// Protected routes
 	api := router.Group("/api/v1")
 	api.Use(middleware.APIKeyAuth(userRepo))
 
-	// Configure rate limiting
-	rateLimitCfg := middleware.RateLimitConfig{
-		RequestsPerMinute: 60, // Adjust based on your needs
-		BurstSize:         10,
-		RedisClient:       redisClient,
-	}
-
-	// Track routes with rate limiting
+	// Track routes
 	tracks := api.Group("/tracks")
-	tracks.Use(middleware.RateLimit(rateLimitCfg))
 	{
-		// Public endpoints (still rate limited)
+		// Public endpoints
 		tracks.GET("", trackHandler.ListTracks)
 		tracks.GET("/:id", trackHandler.GetTrack)
 
 		// Protected endpoints (require authentication)
 		authenticated := tracks.Group("")
-		authenticated.Use(middleware.AuthMiddleware(authService))
+		authenticated.Use(middleware.Auth(authService))
 		{
 			authenticated.POST("", trackHandler.CreateTrack)
 			authenticated.PUT("/:id", trackHandler.UpdateTrack)
@@ -209,7 +223,7 @@ func initRoutes(
 
 		// Admin-only endpoints
 		admin := authenticated.Group("")
-		admin.Use(middleware.RoleGuard(domain.RoleAdmin))
+		admin.Use(middleware.RequireRole(domain.RoleAdmin))
 		{
 			admin.POST("/batch", trackHandler.BatchProcess)
 			admin.POST("/export", trackHandler.ExportTracks)
@@ -218,8 +232,7 @@ func initRoutes(
 
 	// Audio routes
 	audio := api.Group("/audio")
-	audio.Use(middleware.RateLimit(rateLimitCfg))
-	audio.Use(middleware.AuthMiddleware(authService))
+	audio.Use(middleware.Auth(authService))
 	{
 		audio.POST("/upload", audioHandler.UploadAudio)
 		audio.GET("/:id", audioHandler.GetAudioURL)
@@ -227,9 +240,8 @@ func initRoutes(
 
 	// DDEX routes (admin only)
 	ddex := api.Group("/ddex")
-	ddex.Use(middleware.RateLimit(rateLimitCfg))
-	ddex.Use(middleware.AuthMiddleware(authService))
-	ddex.Use(middleware.RoleGuard(domain.RoleAdmin))
+	ddex.Use(middleware.Auth(authService))
+	ddex.Use(middleware.RequireRole(domain.RoleAdmin))
 	{
 		ddex.POST("/validate", ddexHandler.ValidateERN)
 		ddex.POST("/import", ddexHandler.ImportERN)

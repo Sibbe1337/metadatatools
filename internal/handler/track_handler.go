@@ -2,12 +2,14 @@ package handler
 
 import (
 	"fmt"
+	"io"
 	"metadatatool/internal/pkg/domain"
 	apperrors "metadatatool/internal/pkg/errors"
 	"metadatatool/internal/pkg/errortracking"
 	"metadatatool/internal/pkg/metrics"
 	"metadatatool/internal/pkg/utils"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -63,29 +65,40 @@ func (h *TrackHandler) UploadTrack(c *gin.Context) {
 		metrics.DatabaseQueryDuration.WithLabelValues("upload").Observe(time.Since(start).Seconds())
 	}()
 
-	file, err := c.FormFile("file")
+	file, header, err := c.Request.FormFile("file")
 	if err != nil {
-		h.handleError(c, apperrors.NewValidationError("invalid file upload", err.Error()))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no file uploaded"})
+		return
+	}
+	defer file.Close()
+
+	if !utils.IsValidAudioFormat(header.Filename) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid audio format"})
 		return
 	}
 
-	if !utils.IsValidAudioFormat(file.Filename) {
-		h.handleError(c, apperrors.NewValidationError("invalid audio format", "unsupported file format"))
-		return
-	}
-
-	filename := fmt.Sprintf("%s%s", uuid.New().String(), filepath.Ext(file.Filename))
+	audioFormat := utils.GetAudioFormat(header.Filename)
+	filename := fmt.Sprintf("%s%s", uuid.New().String(), filepath.Ext(header.Filename))
 	filepath := filepath.Join(h.storageRoot, filename)
 
-	if err := c.SaveUploadedFile(file, filepath); err != nil {
-		h.handleError(c, apperrors.NewStorageError("failed to save file", err))
+	// Create destination file
+	dst, err := os.Create(filepath)
+	if err != nil {
+		h.handleError(c, apperrors.NewInternalError("failed to create file", err))
+		return
+	}
+	defer dst.Close()
+
+	// Copy the uploaded file to the destination file
+	if _, err := io.Copy(dst, file); err != nil {
+		h.handleError(c, apperrors.NewInternalError("failed to save file", err))
 		return
 	}
 
 	track := &domain.Track{
 		ID:          uuid.New().String(),
 		StoragePath: filepath,
-		FileSize:    file.Size,
+		FileSize:    header.Size,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
 		Status:      domain.TrackStatusPending,
@@ -98,8 +111,8 @@ func (h *TrackHandler) UploadTrack(c *gin.Context) {
 				UpdatedAt: time.Now(),
 			},
 			Technical: domain.AudioTechnicalMetadata{
-				Format:   domain.AudioFormat(utils.GetAudioFormat(file.Filename)),
-				FileSize: file.Size,
+				Format:   domain.AudioFormat(audioFormat),
+				FileSize: header.Size,
 			},
 		},
 	}
@@ -157,13 +170,19 @@ func (h *TrackHandler) CreateTrack(c *gin.Context) {
 		return
 	}
 
+	// Basic validation
+	if err := validateTrack(&track); err != nil {
+		h.handleError(c, apperrors.NewValidationError("invalid track data", err.Error()))
+		return
+	}
+
 	// Set default values
 	track.ID = uuid.New().String()
 	track.CreatedAt = time.Now()
 	track.UpdatedAt = time.Now()
 	track.Status = domain.TrackStatusPending
 
-	// Validate track
+	// Additional validation using validator
 	result := h.validator.Validate(&track)
 	if !result.Valid {
 		details := make([]string, len(result.Issues))
@@ -264,6 +283,12 @@ func (h *TrackHandler) UpdateTrack(c *gin.Context) {
 		return
 	}
 
+	// Basic validation
+	if err := validateTrack(&updateData); err != nil {
+		h.handleError(c, apperrors.NewValidationError("invalid track data", err.Error()))
+		return
+	}
+
 	// Apply updates while preserving certain fields
 	updateData.ID = id
 	updateData.CreatedAt = existingTrack.CreatedAt
@@ -271,7 +296,7 @@ func (h *TrackHandler) UpdateTrack(c *gin.Context) {
 	updateData.StoragePath = existingTrack.StoragePath
 	updateData.FileSize = existingTrack.FileSize
 
-	// Validate updated track
+	// Additional validation using validator
 	result := h.validator.Validate(&updateData)
 	if !result.Valid {
 		details := make([]string, len(result.Issues))

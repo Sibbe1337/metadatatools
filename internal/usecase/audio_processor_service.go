@@ -37,7 +37,61 @@ func NewAudioProcessorService(storage domain.StorageService, tracks domain.Track
 	}
 }
 
-// ProcessAudio processes an audio file and creates a track record
+// Process implements domain.AudioProcessor
+func (s *AudioProcessorService) Process(ctx context.Context, file *domain.ProcessingAudioFile, options *domain.AudioProcessOptions) (*domain.AudioProcessResult, error) {
+	timer := metrics.NewTimer(metrics.AudioOpDurations.WithLabelValues("process"))
+	defer timer.ObserveDuration()
+
+	metrics.AudioOps.WithLabelValues("process", "started").Inc()
+
+	// Extract technical metadata
+	technicalData, err := s.extractTechnicalData(ctx, file.Path)
+	if err != nil {
+		metrics.AudioOpErrors.WithLabelValues("process", "technical_data_failed").Inc()
+		return nil, fmt.Errorf("failed to extract technical data: %w", err)
+	}
+
+	// Create audio analysis object
+	analysis := &domain.AudioAnalysis{
+		AnalyzedAt:   time.Now(),
+		Duration:     technicalData.duration,
+		SampleCount:  technicalData.sampleCount,
+		SampleRate:   technicalData.sampleRate,
+		AnalyzerInfo: "ffmpeg",
+	}
+
+	// Perform audio analysis
+	if err := s.analyzeAudio(ctx, file.Path, analysis); err != nil {
+		metrics.AudioOpErrors.WithLabelValues("process", "analysis_failed").Inc()
+		return nil, fmt.Errorf("failed to analyze audio: %w", err)
+	}
+
+	// Create complete metadata
+	metadata := &domain.CompleteTrackMetadata{
+		BasicTrackMetadata: domain.BasicTrackMetadata{
+			Duration:  technicalData.duration,
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		},
+		Technical: domain.AudioTechnicalMetadata{
+			SampleRate: technicalData.sampleRate,
+			Channels:   technicalData.channels,
+			Bitrate:    technicalData.bitrate,
+			FileSize:   file.Size,
+		},
+	}
+
+	result := &domain.AudioProcessResult{
+		Metadata:     metadata,
+		Analysis:     analysis,
+		AnalyzerInfo: "ffmpeg",
+	}
+
+	metrics.AudioOps.WithLabelValues("process", "completed").Inc()
+	return result, nil
+}
+
+// ProcessAudio is now a higher-level function that uses the Process method
 func (s *AudioProcessorService) ProcessAudio(ctx context.Context, file *domain.ProcessingAudioFile, options *domain.AudioProcessOptions) (*domain.Track, error) {
 	timer := metrics.NewTimer(metrics.AudioOpDurations.WithLabelValues("complete_process"))
 	defer timer.ObserveDuration()
@@ -45,7 +99,7 @@ func (s *AudioProcessorService) ProcessAudio(ctx context.Context, file *domain.P
 	metrics.AudioOps.WithLabelValues("complete_process", "started").Inc()
 
 	// Process audio file
-	result, err := s.processor.Process(ctx, file, options)
+	result, err := s.Process(ctx, file, options)
 	if err != nil {
 		metrics.AudioOpErrors.WithLabelValues("complete_process", "processing_failed").Inc()
 		return nil, fmt.Errorf("failed to process audio: %w", err)
