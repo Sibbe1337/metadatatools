@@ -36,6 +36,23 @@ func (s *AudioService) Process(ctx context.Context, file *domain.ProcessingAudio
 		return nil, fmt.Errorf("file validation failed: %w", err)
 	}
 
+	// Check format support
+	if !s.isSupportedFormat(string(file.Format)) {
+		return nil, fmt.Errorf("unsupported audio format: %s", file.Format)
+	}
+
+	// Create temp file for processing if needed
+	var tempPath string
+	if file.Content != nil {
+		var err error
+		tempPath, err = s.createTempFile(file.Content, filepath.Ext(file.Name))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create temp file: %w", err)
+		}
+		defer s.cleanupTempFile(tempPath)
+		file.Path = tempPath
+	}
+
 	// Process the file
 	result, err := s.processor.Process(ctx, file, options)
 	if err != nil {
@@ -50,6 +67,11 @@ func (s *AudioService) Upload(ctx context.Context, file *domain.StorageFile) err
 	// Validate file
 	if err := s.validateStorageFile(file); err != nil {
 		return fmt.Errorf("file validation failed: %w", err)
+	}
+
+	// Generate storage key if not provided
+	if file.Key == "" {
+		file.Key = generateStorageKey(file.Name)
 	}
 
 	// Upload to storage

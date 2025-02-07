@@ -324,10 +324,3 @@ func (s *StorageService) CleanupTempFiles(ctx context.Context) error {
 	metrics.StorageOperationSuccess.WithLabelValues("cleanup").Inc()
 	return nil
 }
-
-// generateTempKey generates a temporary storage key
-func generateTempKey(filename string) string {
-	ext := filepath.Ext(filename)
-	timestamp := time.Now().UTC().Format("20060102150405")
-	return fmt.Sprintf("%s/%s/%s%s", domain.StoragePathTemp.String(), timestamp[:8], timestamp, ext)
-}
