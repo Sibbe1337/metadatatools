@@ -27,9 +27,19 @@ const (
 
 // AIServiceConfig holds configuration for all AI services
 type AIServiceConfig struct {
-	EnableFallback bool
-	Qwen2Config    *Qwen2Config
-	OpenAIConfig   *OpenAIConfig
+	EnableFallback   bool
+	Qwen2Config      *Qwen2Config
+	OpenAIConfig     *OpenAIConfig
+	ExperimentConfig *ExperimentConfig
+}
+
+// ExperimentConfig holds A/B testing configuration
+type ExperimentConfig struct {
+	ExperimentTrafficPercent float64 // Percentage of traffic to route to experiment (0-1)
+	MinConfidenceThreshold   float64 // Minimum confidence threshold (0-1)
+	EnableAutoFallback       bool    // Whether to automatically fallback on low confidence
+	BigQueryProjectID        string  // GCP project ID for analytics
+	BigQueryDataset          string  // BigQuery dataset for analytics
 }
 
 // Qwen2Config holds configuration for Qwen2-Audio service

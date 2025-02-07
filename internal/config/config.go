@@ -62,6 +62,13 @@ func Load() (*Config, error) {
 		APIKey:        getEnvOrDefault("AI_API_KEY", ""),
 		BaseURL:       getEnvOrDefault("AI_BASE_URL", "https://api.openai.com/v1"),
 		Timeout:       getEnvAsDuration("AI_TIMEOUT", 30*time.Second),
+		Experiment: ExperimentConfig{
+			TrafficPercent:  getEnvAsFloat("AI_EXPERIMENT_TRAFFIC_PERCENT", 0.1),
+			MinConfidence:   getEnvAsFloat("AI_MIN_CONFIDENCE_THRESHOLD", 0.8),
+			EnableFallback:  getEnvAsBool("AI_ENABLE_AUTO_FALLBACK", true),
+			BigQueryProject: getEnvOrDefault("BIGQUERY_PROJECT_ID", ""),
+			BigQueryDataset: getEnvOrDefault("BIGQUERY_DATASET", "ai_metrics"),
+		},
 	}
 
 	// Storage config

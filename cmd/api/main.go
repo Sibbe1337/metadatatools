@@ -22,7 +22,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/go-redis/redis/v8"
+	goredis "github.com/go-redis/redis/v8"
 	_ "github.com/lib/pq"
 )
 
@@ -40,7 +40,7 @@ func main() {
 	errorTracker := errortracking.NewErrorTracker()
 
 	// Initialize Redis client
-	redisClient := redis.NewClient(&redis.Options{
+	redisClient := goredis.NewClient(&goredis.Options{
 		Addr:     fmt.Sprintf("%s:%d", cfg.Redis.Host, cfg.Redis.Port),
 		Password: cfg.Redis.Password,
 		DB:       cfg.Redis.DB,
@@ -145,7 +145,7 @@ func initRoutes(
 	metricsHandler *handler.MetricsHandler,
 	authService domain.AuthService,
 	userRepo domain.UserRepository,
-	redisClient *redis.Client,
+	redisClient *goredis.Client,
 ) {
 	// Add metrics middleware to all routes
 	router.Use(middleware.MetricsMiddleware())

@@ -66,6 +66,16 @@ type AIConfig struct {
 	APIKey        string
 	BaseURL       string
 	Timeout       time.Duration
+	Experiment    ExperimentConfig
+}
+
+// ExperimentConfig holds A/B testing configuration
+type ExperimentConfig struct {
+	TrafficPercent  float64
+	MinConfidence   float64
+	EnableFallback  bool
+	BigQueryProject string
+	BigQueryDataset string
 }
 
 // StorageConfig holds cloud storage configuration
