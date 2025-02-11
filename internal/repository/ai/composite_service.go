@@ -39,40 +39,21 @@ import (
 	"fmt"
 	"math/rand"
 	"metadatatool/internal/pkg/analytics"
-	"metadatatool/internal/pkg/domain"
-	"metadatatool/internal/pkg/metrics"
+	pkgdomain "metadatatool/internal/pkg/domain"
 	"sync"
 	"time"
-
-	"github.com/sirupsen/logrus"
 )
 
-// Config holds configuration for the AI service.
-// It includes settings for timeouts, retries, and rate limiting.
+// Config holds configuration for the composite AI service
 type Config struct {
-	// EnableFallback determines if the service should try backup providers
-	EnableFallback bool
-
-	// TimeoutSeconds is the maximum time to wait for an AI response
-	TimeoutSeconds int
-
-	// MinConfidence is the minimum confidence score required (0-1)
-	MinConfidence float64
-
-	// MaxConcurrentRequests limits the number of concurrent AI calls
+	EnableFallback        bool
+	TimeoutSeconds        int
+	MinConfidence         float64
 	MaxConcurrentRequests int
-
-	// RetryAttempts is the maximum number of retry attempts
-	RetryAttempts int
-
-	// RetryBackoffSeconds is the base delay between retries
-	RetryBackoffSeconds int
-
-	// OpenAIConfig contains OpenAI-specific configuration
-	OpenAIConfig *OpenAIConfig
-
-	// Qwen2Config contains Qwen2-specific configuration
-	Qwen2Config *Qwen2Config
+	RetryAttempts         int
+	RetryBackoffSeconds   int
+	Qwen2Config           *pkgdomain.Qwen2Config
+	OpenAIConfig          *pkgdomain.OpenAIConfig
 }
 
 // OpenAIConfig contains configuration specific to the OpenAI provider.
@@ -105,33 +86,32 @@ type Qwen2Config struct {
 	MaxTokens int
 }
 
-// CompositeAIService orchestrates multiple AI providers and handles
-// fallback, retries, and analytics tracking.
+// CompositeAIService implements pkg/domain.AIService
 type CompositeAIService struct {
 	config           *Config
-	qwen2Service     domain.AIService
-	openAIService    domain.AIService
-	primaryProvider  domain.AIProvider
-	fallbackProvider domain.AIProvider
-	metrics          map[domain.AIProvider]*domain.AIMetrics
+	qwen2Service     pkgdomain.AIService
+	openAIService    pkgdomain.AIService
+	primaryProvider  pkgdomain.AIProvider
+	fallbackProvider pkgdomain.AIProvider
+	metrics          map[pkgdomain.AIProvider]*pkgdomain.AIMetrics
 	analytics        *analytics.BigQueryService
-	mu               sync.RWMutex
 	experimentGroup  string
 	semaphore        chan struct{}
+	mu               sync.RWMutex
 }
 
 // Provider defines the interface that all AI providers must implement.
 // This allows the composite service to work with different AI backends.
 type Provider interface {
 	// EnrichMetadata enriches track metadata using AI
-	EnrichMetadata(ctx context.Context, track *domain.Track) (*domain.Metadata, error)
+	EnrichMetadata(ctx context.Context, track *pkgdomain.Track) (*pkgdomain.Metadata, error)
 
 	// ValidateMetadata validates track metadata using AI
-	ValidateMetadata(ctx context.Context, track *domain.Track) (*domain.ValidationResult, error)
+	ValidateMetadata(ctx context.Context, track *pkgdomain.Track) (*pkgdomain.ValidationResult, error)
 }
 
 // NewCompositeAIService creates a new composite AI service
-func NewCompositeAIService(config *Config, analytics *analytics.BigQueryService) (*CompositeAIService, error) {
+func NewCompositeAIService(config *Config, analytics *analytics.BigQueryService) (pkgdomain.AIService, error) {
 	if config == nil {
 		return nil, fmt.Errorf("AI service config is required")
 	}
@@ -139,261 +119,127 @@ func NewCompositeAIService(config *Config, analytics *analytics.BigQueryService)
 		return nil, fmt.Errorf("analytics service is required")
 	}
 
-	// Create Qwen2-Audio service
-	qwen2Config := &domain.Qwen2Config{
-		APIKey:                config.Qwen2Config.APIKey,
-		Endpoint:              config.Qwen2Config.Endpoint,
-		TimeoutSeconds:        config.TimeoutSeconds,
-		MinConfidence:         config.MinConfidence,
-		MaxConcurrentRequests: config.MaxConcurrentRequests,
-		RetryAttempts:         config.RetryAttempts,
-		RetryBackoffSeconds:   config.RetryBackoffSeconds,
-	}
-	qwen2Service, err := NewQwen2Service(qwen2Config)
+	// Create Qwen2 service
+	qwen2Service, err := NewQwen2Service(config.Qwen2Config)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create Qwen2 service: %w", err)
+		return nil, fmt.Errorf("failed to create qwen2 service: %w", err)
 	}
 
 	// Create OpenAI service
-	openAIConfig := &domain.OpenAIConfig{
-		APIKey:                config.OpenAIConfig.APIKey,
-		Endpoint:              config.OpenAIConfig.Endpoint,
-		TimeoutSeconds:        config.TimeoutSeconds,
-		MinConfidence:         config.MinConfidence,
-		MaxConcurrentRequests: config.MaxConcurrentRequests,
-		RetryAttempts:         config.RetryAttempts,
-		RetryBackoffSeconds:   config.RetryBackoffSeconds,
-	}
-	openAIService, err := NewOpenAIService(openAIConfig)
+	openAIService, err := NewOpenAIService(config.OpenAIConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create OpenAI service: %w", err)
+		return nil, fmt.Errorf("failed to create openai service: %w", err)
 	}
 
-	return &CompositeAIService{
+	service := &CompositeAIService{
 		config:           config,
 		qwen2Service:     qwen2Service,
 		openAIService:    openAIService,
-		primaryProvider:  domain.AIProviderQwen2,
-		fallbackProvider: domain.AIProviderOpenAI,
-		metrics:          make(map[domain.AIProvider]*domain.AIMetrics),
+		primaryProvider:  pkgdomain.AIProviderQwen2,
+		fallbackProvider: pkgdomain.AIProviderOpenAI,
+		metrics:          make(map[pkgdomain.AIProvider]*pkgdomain.AIMetrics),
 		analytics:        analytics,
-		experimentGroup:  "control",
 		semaphore:        make(chan struct{}, config.MaxConcurrentRequests),
-	}, nil
+	}
+
+	return service, nil
 }
 
-// EnrichMetadata enriches a track with AI-generated metadata
-func (s *CompositeAIService) EnrichMetadata(ctx context.Context, track *domain.Track) error {
+// EnrichMetadata enriches track metadata using AI
+func (s *CompositeAIService) EnrichMetadata(ctx context.Context, track *pkgdomain.Track) error {
 	start := time.Now()
 
 	// Determine if this request should be part of the experiment (10% of traffic)
 	isExperiment := rand.Float64() < 0.1
 
-	var service domain.AIService
-	var provider domain.AIProvider
-	var experimentGroup string
+	var service pkgdomain.AIService
+	var provider pkgdomain.AIProvider
 
 	if isExperiment {
 		service = s.openAIService
-		provider = domain.AIProviderOpenAI
-		experimentGroup = "experiment"
+		provider = pkgdomain.AIProviderOpenAI
 	} else {
 		service = s.qwen2Service
-		provider = domain.AIProviderQwen2
-		experimentGroup = "control"
+		provider = pkgdomain.AIProviderQwen2
 	}
 
-	// Try selected service
+	// Acquire semaphore
+	select {
+	case s.semaphore <- struct{}{}:
+		defer func() { <-s.semaphore }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	// Call the service
 	err := service.EnrichMetadata(ctx, track)
 	duration := time.Since(start)
 
-	// Record experiment data
-	record := &analytics.AIExperimentRecord{
-		Timestamp:       time.Now(),
-		TrackID:         track.ID,
-		ModelProvider:   string(provider),
-		ModelVersion:    track.ModelVersion(),
-		ProcessingTime:  duration.Seconds(),
-		Confidence:      track.AIConfidence(),
-		Success:         err == nil,
-		ErrorMessage:    "",
-		ExperimentGroup: experimentGroup,
-	}
-
 	if err != nil {
-		record.ErrorMessage = err.Error()
 		s.recordFailure(provider, err)
-		metrics.AIRequestDuration.WithLabelValues(string(provider) + "_failed").Observe(duration.Seconds())
-
-		// Try fallback if confidence is low or there was an error
-		if s.config.EnableFallback {
-			fallbackStart := time.Now()
-			err = s.getFallbackService().EnrichMetadata(ctx, track)
-			fallbackDuration := time.Since(fallbackStart)
-
-			// Record fallback attempt
-			fallbackRecord := &analytics.AIExperimentRecord{
-				Timestamp:       time.Now(),
-				TrackID:         track.ID,
-				ModelProvider:   string(s.fallbackProvider),
-				ModelVersion:    track.ModelVersion(),
-				ProcessingTime:  fallbackDuration.Seconds(),
-				Confidence:      track.AIConfidence(),
-				Success:         err == nil,
-				ErrorMessage:    "",
-				ExperimentGroup: experimentGroup + "_fallback",
-			}
-
-			if err != nil {
-				fallbackRecord.ErrorMessage = err.Error()
-				s.recordFailure(s.fallbackProvider, err)
-				metrics.AIRequestDuration.WithLabelValues(string(s.fallbackProvider) + "_failed").Observe(fallbackDuration.Seconds())
-				return fmt.Errorf("both primary and fallback services failed: %w", err)
-			}
-
-			s.recordSuccess(s.fallbackProvider, fallbackDuration)
-			metrics.AIRequestDuration.WithLabelValues(string(s.fallbackProvider) + "_success").Observe(fallbackDuration.Seconds())
-
-			// Record fallback metrics
-			if err := s.analytics.RecordAIExperiment(ctx, fallbackRecord); err != nil {
-				logrus.WithError(err).Error("Failed to record fallback experiment data")
-			}
-		} else {
-			return fmt.Errorf("service failed and fallback is disabled: %w", err)
-		}
-	} else {
-		// Check confidence threshold
-		if track.AIConfidence() < s.config.MinConfidence {
-			// Try fallback for low confidence
-			fallbackStart := time.Now()
-			fallbackErr := s.getFallbackService().EnrichMetadata(ctx, track)
-			fallbackDuration := time.Since(fallbackStart)
-
-			fallbackRecord := &analytics.AIExperimentRecord{
-				Timestamp:       time.Now(),
-				TrackID:         track.ID,
-				ModelProvider:   string(s.fallbackProvider),
-				ModelVersion:    track.ModelVersion(),
-				ProcessingTime:  fallbackDuration.Seconds(),
-				Confidence:      track.AIConfidence(),
-				Success:         fallbackErr == nil,
-				ErrorMessage:    "",
-				ExperimentGroup: experimentGroup + "_low_confidence",
-			}
-
-			if fallbackErr == nil && track.AIConfidence() > s.config.MinConfidence {
-				s.recordSuccess(s.fallbackProvider, fallbackDuration)
-				metrics.AIRequestDuration.WithLabelValues(string(s.fallbackProvider) + "_success").Observe(fallbackDuration.Seconds())
-			} else {
-				// Keep original results if fallback didn't improve confidence
-				fallbackRecord.ErrorMessage = "Fallback did not improve confidence"
-			}
-
-			// Record fallback metrics
-			if err := s.analytics.RecordAIExperiment(ctx, fallbackRecord); err != nil {
-				logrus.WithError(err).Error("Failed to record fallback experiment data")
-			}
-		}
-
-		s.recordSuccess(provider, duration)
-		metrics.AIRequestDuration.WithLabelValues(string(provider) + "_success").Observe(duration.Seconds())
+		return fmt.Errorf("failed to enrich metadata: %w", err)
 	}
 
-	// Record experiment metrics
-	if err := s.analytics.RecordAIExperiment(ctx, record); err != nil {
-		logrus.WithError(err).Error("Failed to record experiment data")
-	}
+	s.recordSuccess(provider, duration)
 
 	return nil
 }
 
 // ValidateMetadata validates track metadata using AI
-func (s *CompositeAIService) ValidateMetadata(ctx context.Context, track *domain.Track) (float64, error) {
-	start := time.Now()
-
-	// Try primary service first
+func (s *CompositeAIService) ValidateMetadata(ctx context.Context, track *pkgdomain.Track) (float64, error) {
+	// Use primary service first
 	confidence, err := s.getPrimaryService().ValidateMetadata(ctx, track)
 	if err == nil {
-		s.recordSuccess(s.primaryProvider, time.Since(start))
 		return confidence, nil
 	}
 
-	// Record failure and try fallback if enabled
-	s.recordFailure(s.primaryProvider, err)
-	metrics.AIRequestDuration.WithLabelValues(string(s.primaryProvider) + "_failed").Observe(time.Since(start).Seconds())
-
+	// If fallback is disabled, return the error
 	if !s.config.EnableFallback {
-		return 0, fmt.Errorf("primary service failed and fallback is disabled: %w", err)
+		return 0.0, err
 	}
 
 	// Try fallback service
-	fallbackStart := time.Now()
-	confidence, err = s.getFallbackService().ValidateMetadata(ctx, track)
-	if err != nil {
-		s.recordFailure(s.fallbackProvider, err)
-		metrics.AIRequestDuration.WithLabelValues(string(s.fallbackProvider) + "_failed").Observe(time.Since(fallbackStart).Seconds())
-		return 0, fmt.Errorf("both primary and fallback services failed: %w", err)
+	confidence, fallbackErr := s.getFallbackService().ValidateMetadata(ctx, track)
+	if fallbackErr != nil {
+		// Return original error if fallback also fails
+		return 0.0, err
 	}
 
-	s.recordSuccess(s.fallbackProvider, time.Since(fallbackStart))
-	metrics.AIRequestDuration.WithLabelValues(string(s.fallbackProvider) + "_success").Observe(time.Since(fallbackStart).Seconds())
 	return confidence, nil
 }
 
 // BatchProcess processes multiple tracks in batch
-func (s *CompositeAIService) BatchProcess(ctx context.Context, tracks []*domain.Track) error {
-	start := time.Now()
-
-	// Try primary service first
-	err := s.getPrimaryService().BatchProcess(ctx, tracks)
-	if err == nil {
-		s.recordSuccess(s.primaryProvider, time.Since(start))
-		return nil
+func (s *CompositeAIService) BatchProcess(ctx context.Context, tracks []*pkgdomain.Track) error {
+	// Process tracks sequentially since some services don't support batch processing
+	for _, track := range tracks {
+		if err := s.EnrichMetadata(ctx, track); err != nil {
+			return fmt.Errorf("failed to process track %s: %w", track.ID, err)
+		}
 	}
-
-	// Record failure and try fallback if enabled
-	s.recordFailure(s.primaryProvider, err)
-	metrics.AIRequestDuration.WithLabelValues(string(s.primaryProvider) + "_batch_failed").Observe(time.Since(start).Seconds())
-
-	if !s.config.EnableFallback {
-		return fmt.Errorf("primary service failed and fallback is disabled: %w", err)
-	}
-
-	// Try fallback service
-	fallbackStart := time.Now()
-	err = s.getFallbackService().BatchProcess(ctx, tracks)
-	if err != nil {
-		s.recordFailure(s.fallbackProvider, err)
-		metrics.AIRequestDuration.WithLabelValues(string(s.fallbackProvider) + "_batch_failed").Observe(time.Since(fallbackStart).Seconds())
-		return fmt.Errorf("both primary and fallback services failed: %w", err)
-	}
-
-	s.recordSuccess(s.fallbackProvider, time.Since(fallbackStart))
-	metrics.AIRequestDuration.WithLabelValues(string(s.fallbackProvider) + "_batch_success").Observe(time.Since(fallbackStart).Seconds())
 	return nil
 }
 
 // SetPrimaryProvider sets the primary AI provider
-func (s *CompositeAIService) SetPrimaryProvider(provider domain.AIProvider) {
+func (s *CompositeAIService) SetPrimaryProvider(provider pkgdomain.AIProvider) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.primaryProvider = provider
 }
 
 // SetFallbackProvider sets the fallback AI provider
-func (s *CompositeAIService) SetFallbackProvider(provider domain.AIProvider) {
+func (s *CompositeAIService) SetFallbackProvider(provider pkgdomain.AIProvider) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.fallbackProvider = provider
 }
 
 // GetProviderMetrics returns metrics for each provider
-func (s *CompositeAIService) GetProviderMetrics() map[domain.AIProvider]*domain.AIMetrics {
+func (s *CompositeAIService) GetProviderMetrics() map[pkgdomain.AIProvider]*pkgdomain.AIMetrics {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	// Create a copy of the metrics
-	metrics := make(map[domain.AIProvider]*domain.AIMetrics)
+	metrics := make(map[pkgdomain.AIProvider]*pkgdomain.AIMetrics)
 	for provider, metric := range s.metrics {
 		metricCopy := *metric
 		metrics[provider] = &metricCopy
@@ -404,32 +250,32 @@ func (s *CompositeAIService) GetProviderMetrics() map[domain.AIProvider]*domain.
 
 // Helper methods
 
-func (s *CompositeAIService) getPrimaryService() domain.AIService {
+func (s *CompositeAIService) getPrimaryService() pkgdomain.AIService {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if s.primaryProvider == domain.AIProviderQwen2 {
+	if s.primaryProvider == pkgdomain.AIProviderQwen2 {
 		return s.qwen2Service
 	}
 	return s.openAIService
 }
 
-func (s *CompositeAIService) getFallbackService() domain.AIService {
+func (s *CompositeAIService) getFallbackService() pkgdomain.AIService {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if s.fallbackProvider == domain.AIProviderQwen2 {
+	if s.fallbackProvider == pkgdomain.AIProviderQwen2 {
 		return s.qwen2Service
 	}
 	return s.openAIService
 }
 
-func (s *CompositeAIService) recordSuccess(provider domain.AIProvider, duration time.Duration) {
+func (s *CompositeAIService) recordSuccess(provider pkgdomain.AIProvider, duration time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if _, exists := s.metrics[provider]; !exists {
-		s.metrics[provider] = &domain.AIMetrics{}
+		s.metrics[provider] = &pkgdomain.AIMetrics{}
 	}
 
 	s.metrics[provider].RequestCount++
@@ -438,12 +284,12 @@ func (s *CompositeAIService) recordSuccess(provider domain.AIProvider, duration 
 	s.metrics[provider].AverageLatency = (s.metrics[provider].AverageLatency*time.Duration(s.metrics[provider].RequestCount-1) + duration) / time.Duration(s.metrics[provider].RequestCount)
 }
 
-func (s *CompositeAIService) recordFailure(provider domain.AIProvider, err error) {
+func (s *CompositeAIService) recordFailure(provider pkgdomain.AIProvider, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if _, exists := s.metrics[provider]; !exists {
-		s.metrics[provider] = &domain.AIMetrics{}
+		s.metrics[provider] = &pkgdomain.AIMetrics{}
 	}
 
 	s.metrics[provider].RequestCount++
@@ -460,23 +306,4 @@ func (s *CompositeAIService) SetExperimentGroup(group string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.experimentGroup = group
-}
-
-// getExperimentGroup safely retrieves the current experiment group.
-func (s *CompositeAIService) getExperimentGroup() string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.experimentGroup
-}
-
-// enrichWithRetry attempts to enrich metadata with retries and fallback.
-func (s *CompositeAIService) enrichWithRetry(ctx context.Context, track *domain.Track) (*domain.Metadata, error) {
-	// Implementation details...
-	return nil, nil // TODO: Implement
-}
-
-// validateWithRetry attempts to validate metadata with retries and fallback.
-func (s *CompositeAIService) validateWithRetry(ctx context.Context, track *domain.Track) (*domain.ValidationResult, error) {
-	// Implementation details...
-	return nil, nil // TODO: Implement
 }

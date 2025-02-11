@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/go-redis/redis/v8"
+	"github.com/redis/go-redis/v9"
 )
 
 // HealthHandler handles health check requests
@@ -41,22 +41,31 @@ func (h *HealthHandler) Check(c *gin.Context) {
 		Services: make(map[string]ServiceStatus),
 	}
 
-	// Check Redis
-	redisCtx := c.Request.Context()
-	redisStart := time.Now()
-	_, err := h.redis.Ping(redisCtx).Result()
-	if err != nil {
-		status.Services["redis"] = ServiceStatus{
-			Status:    "error",
-			Message:   "Failed to ping Redis",
-			Latency:   time.Since(redisStart).Milliseconds(),
-			Timestamp: time.Now().UTC().Format(time.RFC3339),
+	// Check Redis if enabled
+	if h.redis != nil {
+		redisCtx := c.Request.Context()
+		redisStart := time.Now()
+		_, err := h.redis.Ping(redisCtx).Result()
+		if err != nil {
+			status.Services["redis"] = ServiceStatus{
+				Status:    "error",
+				Message:   "Failed to ping Redis",
+				Latency:   time.Since(redisStart).Milliseconds(),
+				Timestamp: time.Now().UTC().Format(time.RFC3339),
+			}
+			status.Status = "degraded"
+		} else {
+			status.Services["redis"] = ServiceStatus{
+				Status:    "healthy",
+				Latency:   time.Since(redisStart).Milliseconds(),
+				Timestamp: time.Now().UTC().Format(time.RFC3339),
+			}
 		}
-		status.Status = "degraded"
 	} else {
 		status.Services["redis"] = ServiceStatus{
-			Status:    "healthy",
-			Latency:   time.Since(redisStart).Milliseconds(),
+			Status:    "disabled",
+			Message:   "Redis is disabled",
+			Latency:   0,
 			Timestamp: time.Now().UTC().Format(time.RFC3339),
 		}
 	}

@@ -2,8 +2,12 @@ package audio
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"math"
+	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -271,33 +275,104 @@ func (a *AudioAnalyzer) calculateFeatures(ctx context.Context, inputPath string)
 
 // Helper functions for parsing outputs
 func parseBPMFromFFmpeg(output string) float64 {
-	// Implementation for parsing BPM from FFmpeg output
+	// Parse BPM from FFmpeg output using regex
+	re := regexp.MustCompile(`BPM:\s*(\d+\.?\d*)`)
+	matches := re.FindStringSubmatch(output)
+	if len(matches) > 1 {
+		if bpm, err := strconv.ParseFloat(matches[1], 64); err == nil {
+			return bpm
+		}
+	}
 	return 0
 }
 
 func parseKeyFromChromagram(output string) MusicalKey {
-	// Implementation for parsing key from chromagram
+	// Parse key from chromagram output
+	re := regexp.MustCompile(`Key:\s*(\w[#b]?)\s*(major|minor)\s*\(confidence:\s*(\d+\.?\d*)\)`)
+	matches := re.FindStringSubmatch(output)
+	if len(matches) > 3 {
+		confidence, _ := strconv.ParseFloat(matches[3], 64)
+		return MusicalKey{
+			Root:       matches[1],
+			Mode:       matches[2],
+			Confidence: confidence,
+		}
+	}
 	return MusicalKey{}
 }
 
 func parseBeatsFromOutput(output string) []float64 {
-	// Implementation for parsing beat positions
-	return nil
+	// Parse beat positions from output
+	var beats []float64
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "beat_time:") {
+			fields := strings.Fields(line)
+			if len(fields) > 1 {
+				if beat, err := strconv.ParseFloat(fields[1], 64); err == nil {
+					beats = append(beats, beat)
+				}
+			}
+		}
+	}
+	return beats
 }
 
 func parseEssentiaSegments(jsonPath string) ([]Segment, error) {
-	// Implementation for parsing Essentia JSON output
-	return nil, nil
+	// Read and parse Essentia JSON output
+	data, err := os.ReadFile(jsonPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read Essentia JSON: %w", err)
+	}
+
+	var result struct {
+		Segments []struct {
+			Start      float64   `json:"start"`
+			Duration   float64   `json:"duration"`
+			Loudness   float64   `json:"loudness"`
+			Pitches    []float64 `json:"pitches"`
+			Timbre     []float64 `json:"timbre"`
+			Confidence float64   `json:"confidence"`
+		} `json:"segments"`
+	}
+
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse Essentia JSON: %w", err)
+	}
+
+	segments := make([]Segment, len(result.Segments))
+	for i, s := range result.Segments {
+		segments[i] = Segment{
+			Start:      s.Start,
+			Duration:   s.Duration,
+			Loudness:   s.Loudness,
+			Pitches:    s.Pitches,
+			Timbre:     s.Timbre,
+			Confidence: s.Confidence,
+		}
+	}
+	return segments, nil
 }
 
 func parseEnergyFromStats(output string) float64 {
-	// Implementation for parsing energy from stats
+	// Parse energy from stats output
+	re := regexp.MustCompile(`RMS:\s*(\d+\.?\d*)`)
+	matches := re.FindStringSubmatch(output)
+	if len(matches) > 1 {
+		if energy, err := strconv.ParseFloat(matches[1], 64); err == nil {
+			return energy
+		}
+	}
 	return 0
 }
 
 func calculateDanceability(energy float64, bpm float64) float64 {
-	// Implementation for calculating danceability score
-	return 0
+	// Calculate danceability score based on energy and BPM
+	// Normalize BPM to a 0-1 range (assuming typical range 60-180 BPM)
+	normalizedBPM := math.Max(0, math.Min(1, (bpm-60)/(180-60)))
+
+	// Weight energy and BPM equally for danceability
+	return (energy + normalizedBPM) / 2
 }
 
 // detectKeyWithEssentia detects musical key using Essentia
@@ -322,6 +397,27 @@ func (a *AudioAnalyzer) detectKeyWithEssentia(ctx context.Context, inputPath str
 }
 
 func parseEssentiaKey(jsonPath string) (MusicalKey, error) {
-	// Implementation for parsing key from Essentia JSON output
-	return MusicalKey{}, nil
+	// Read and parse Essentia JSON output for key detection
+	data, err := os.ReadFile(jsonPath)
+	if err != nil {
+		return MusicalKey{}, fmt.Errorf("failed to read Essentia key JSON: %w", err)
+	}
+
+	var result struct {
+		Key struct {
+			Key        string  `json:"key"`
+			Scale      string  `json:"scale"`
+			Confidence float64 `json:"confidence"`
+		} `json:"key_key"`
+	}
+
+	if err := json.Unmarshal(data, &result); err != nil {
+		return MusicalKey{}, fmt.Errorf("failed to parse Essentia key JSON: %w", err)
+	}
+
+	return MusicalKey{
+		Root:       result.Key.Key,
+		Mode:       result.Key.Scale,
+		Confidence: result.Key.Confidence,
+	}, nil
 }

@@ -7,7 +7,7 @@ import (
 	"metadatatool/internal/pkg/domain"
 	"time"
 
-	"github.com/go-redis/redis/v8"
+	"github.com/redis/go-redis/v9"
 )
 
 const (
@@ -129,6 +129,30 @@ func (r *CachedUserRepository) List(ctx context.Context, offset, limit int) ([]*
 	return r.delegate.List(ctx, offset, limit)
 }
 
+// UpdateAPIKey updates the API key for a user
+func (r *CachedUserRepository) UpdateAPIKey(ctx context.Context, userID string, apiKey string) error {
+	// Update in database
+	if err := r.delegate.UpdateAPIKey(ctx, userID, apiKey); err != nil {
+		return err
+	}
+
+	// Get user to invalidate all cache keys
+	user, err := r.delegate.GetByID(ctx, userID)
+	if err != nil {
+		// Log error but don't fail the operation
+		fmt.Printf("failed to get user for cache invalidation: %v\n", err)
+		return nil
+	}
+
+	// Invalidate cache
+	if err := r.invalidateCache(ctx, user); err != nil {
+		// Log error but don't fail the operation
+		fmt.Printf("failed to invalidate user cache: %v\n", err)
+	}
+
+	return nil
+}
+
 // Helper functions for cache operations
 
 func (r *CachedUserRepository) getFromCache(ctx context.Context, key string) (*domain.User, error) {
@@ -156,11 +180,11 @@ func (r *CachedUserRepository) setCache(ctx context.Context, key string, user *d
 	return r.client.Set(ctx, key, data, userTTL).Err()
 }
 
-func (r *CachedUserRepository) invalidateCache(ctx context.Context, user *domain.User) {
+func (r *CachedUserRepository) invalidateCache(ctx context.Context, user *domain.User) error {
 	keys := []string{
 		fmt.Sprintf("%s:id:%s", userKeyPrefix, user.ID),
 		fmt.Sprintf("%s:email:%s", userKeyPrefix, user.Email),
 		fmt.Sprintf("%s:apikey:%s", userKeyPrefix, user.APIKey),
 	}
-	r.client.Del(ctx, keys...)
+	return r.client.Del(ctx, keys...).Err()
 }

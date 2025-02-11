@@ -1,0 +1,52 @@
+name: Pub/Sub Tests
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'internal/repository/queue/**'
+      - 'internal/pkg/domain/queue.go'
+      - 'internal/pkg/metrics/queue.go'
+      - '.github/workflows/pubsub-tests.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'internal/repository/queue/**'
+      - 'internal/pkg/domain/queue.go'
+      - 'internal/pkg/metrics/queue.go'
+      - '.github/workflows/pubsub-tests.yml'
+
+jobs:
+  test:
+    name: Run Pub/Sub Tests
+    runs-on: ubuntu-latest
+
+    services:
+      pubsub:
+        image: gcr.io/google.com/cloudsdktool/cloud-sdk:latest
+        ports:
+          - 8085:8085
+        options: >-
+          --health-cmd "gcloud beta emulators pubsub start --host-port=localhost:8085"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          check-latest: true
+
+      - name: Install dependencies
+        run: |
+          go mod download
+          go mod verify
+
+      - name: Run tests
+        run: go test ./internal/repository/queue/... -v
+        env:
+          PUBSUB_EMULATOR_HOST: localhost:8085 

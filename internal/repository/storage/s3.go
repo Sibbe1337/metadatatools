@@ -3,11 +3,12 @@ package storage
 import (
 	"context"
 	"fmt"
-	"metadatatool/internal/config"
+	"io"
+	"metadatatool/internal/pkg/config"
 	"metadatatool/internal/pkg/domain"
+	pkgdomain "metadatatool/internal/pkg/domain"
 	"metadatatool/internal/pkg/metrics"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -26,7 +27,7 @@ type s3Storage struct {
 }
 
 // NewS3Storage creates a new S3 storage service
-func NewS3Storage(cfg *config.StorageConfig) (domain.StorageService, error) {
+func NewS3Storage(cfg *config.StorageConfig) (pkgdomain.StorageService, error) {
 	if cfg.Bucket == "" {
 		return nil, &domain.StorageError{
 			Code:    "InvalidConfig",
@@ -77,7 +78,7 @@ func (s *s3Storage) Upload(ctx context.Context, file *domain.StorageFile) error 
 	}
 
 	// Validate upload
-	if err := s.ValidateUpload(ctx, file.Name, file.Size, ""); err != nil {
+	if err := s.ValidateUpload(ctx, file.Size, file.ContentType); err != nil {
 		metrics.AudioOpErrors.WithLabelValues("s3_upload", "validation_error").Inc()
 		return err
 	}
@@ -257,8 +258,8 @@ func (s *s3Storage) ListFiles(ctx context.Context, prefix string) ([]*domain.Fil
 	return files, nil
 }
 
-// GetQuotaUsage gets the total storage usage for a user
-func (s *s3Storage) GetQuotaUsage(ctx context.Context, userID string) (int64, error) {
+// GetQuotaUsage gets the total storage usage
+func (s *s3Storage) GetQuotaUsage(ctx context.Context) (int64, error) {
 	timer := metrics.NewTimer(metrics.StorageOperationDuration.WithLabelValues("get_quota"))
 	defer timer.ObserveDuration()
 
@@ -266,7 +267,6 @@ func (s *s3Storage) GetQuotaUsage(ctx context.Context, userID string) (int64, er
 
 	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
 		Bucket: aws.String(s.bucket),
-		Prefix: aws.String(fmt.Sprintf("users/%s/", userID)),
 	})
 
 	for paginator.HasMorePages() {
@@ -281,26 +281,56 @@ func (s *s3Storage) GetQuotaUsage(ctx context.Context, userID string) (int64, er
 		}
 	}
 
-	metrics.StorageQuotaUsage.WithLabelValues(userID).Set(float64(totalSize))
 	metrics.StorageOperationSuccess.WithLabelValues("get_quota").Inc()
 	return totalSize, nil
 }
 
+// GetUserQuotaUsage gets the total storage usage for a specific user
+func (s *s3Storage) GetUserQuotaUsage(ctx context.Context, userID string) (int64, error) {
+	timer := metrics.NewTimer(metrics.StorageOperationDuration.WithLabelValues("get_user_quota"))
+	defer timer.ObserveDuration()
+
+	var totalSize int64
+
+	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(s.bucket),
+		Prefix: aws.String(fmt.Sprintf("users/%s/", userID)),
+	})
+
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			metrics.StorageOperationErrors.WithLabelValues("get_user_quota").Inc()
+			return 0, fmt.Errorf("failed to get user quota usage: %w", err)
+		}
+
+		for _, obj := range page.Contents {
+			totalSize += aws.ToInt64(obj.Size)
+		}
+	}
+
+	metrics.StorageQuotaUsage.WithLabelValues(userID).Set(float64(totalSize))
+	metrics.StorageOperationSuccess.WithLabelValues("get_user_quota").Inc()
+	return totalSize, nil
+}
+
 // ValidateUpload validates a file upload request
-func (s *s3Storage) ValidateUpload(ctx context.Context, filename string, size int64, userID string) error {
+func (s *s3Storage) ValidateUpload(ctx context.Context, fileSize int64, mimeType string) error {
+	timer := metrics.NewTimer(metrics.StorageOperationDuration.WithLabelValues("validate_upload"))
+	defer timer.ObserveDuration()
+
 	// Check file size
-	if size > s.cfg.MaxFileSize {
+	if fileSize > s.cfg.MaxFileSize {
 		return &domain.StorageError{
 			Code:    "FILE_TOO_LARGE",
-			Message: fmt.Sprintf("file size %d exceeds maximum allowed size %d", size, s.cfg.MaxFileSize),
+			Message: fmt.Sprintf("file size %d exceeds maximum allowed size %d", fileSize, s.cfg.MaxFileSize),
 		}
 	}
 
 	// Check file type
-	ext := strings.ToLower(filepath.Ext(filename))
 	allowed := false
 	for _, allowedType := range s.cfg.AllowedFileTypes {
-		if ext == allowedType {
+		if mimeType == allowedType {
 			allowed = true
 			break
 		}
@@ -308,20 +338,20 @@ func (s *s3Storage) ValidateUpload(ctx context.Context, filename string, size in
 	if !allowed {
 		return &domain.StorageError{
 			Code:    "INVALID_FILE_TYPE",
-			Message: fmt.Sprintf("file type %s is not allowed", ext),
+			Message: fmt.Sprintf("file type %s is not allowed", mimeType),
 		}
 	}
 
-	// Check user quota
-	usage, err := s.GetQuotaUsage(ctx, userID)
+	// Check total quota
+	usage, err := s.GetQuotaUsage(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to check quota: %w", err)
 	}
 
-	if usage+size > s.cfg.UserQuota {
+	if usage+fileSize > s.cfg.TotalQuota {
 		return &domain.StorageError{
 			Code:    "QUOTA_EXCEEDED",
-			Message: "user storage quota exceeded",
+			Message: "total storage quota exceeded",
 		}
 	}
 
@@ -399,5 +429,71 @@ func (s *s3Storage) deleteObjects(ctx context.Context, objects []types.ObjectIde
 		metrics.StorageOperationErrors.WithLabelValues("cleanup_batch").Inc()
 		return fmt.Errorf("failed to delete objects batch: %w", err)
 	}
+	return nil
+}
+
+// DeleteAudio deletes an audio file from storage
+func (s *s3Storage) DeleteAudio(ctx context.Context, path string) error {
+	timer := metrics.NewTimer(metrics.StorageOperationDuration.WithLabelValues("delete_audio"))
+	defer timer.ObserveDuration()
+
+	// Delete file
+	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(path),
+	})
+
+	if err != nil {
+		metrics.StorageOperationErrors.WithLabelValues("delete_audio").Inc()
+		return fmt.Errorf("failed to delete audio file: %w", err)
+	}
+
+	metrics.StorageOperationSuccess.WithLabelValues("delete_audio").Inc()
+	return nil
+}
+
+// GetSignedURL generates a pre-signed URL for the file with expiry
+func (s *s3Storage) GetSignedURL(ctx context.Context, path string, expiry time.Duration) (string, error) {
+	timer := metrics.NewTimer(metrics.StorageOperationDuration.WithLabelValues("get_signed_url"))
+	defer timer.ObserveDuration()
+
+	// Create presigner
+	presigner := s3.NewPresignClient(s.client)
+
+	// Generate presigned URL
+	request, err := presigner.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(path),
+	}, func(opts *s3.PresignOptions) {
+		opts.Expires = expiry
+	})
+
+	if err != nil {
+		metrics.StorageOperationErrors.WithLabelValues("get_signed_url").Inc()
+		return "", fmt.Errorf("failed to generate signed URL: %w", err)
+	}
+
+	metrics.StorageOperationSuccess.WithLabelValues("get_signed_url").Inc()
+	return request.URL, nil
+}
+
+// UploadAudio uploads an audio file to storage
+func (s *s3Storage) UploadAudio(ctx context.Context, file io.Reader, path string) error {
+	timer := metrics.NewTimer(metrics.StorageOperationDuration.WithLabelValues("upload_audio"))
+	defer timer.ObserveDuration()
+
+	// Upload file
+	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(path),
+		Body:   file,
+	})
+
+	if err != nil {
+		metrics.StorageOperationErrors.WithLabelValues("upload_audio").Inc()
+		return fmt.Errorf("failed to upload audio file: %w", err)
+	}
+
+	metrics.StorageOperationSuccess.WithLabelValues("upload_audio").Inc()
 	return nil
 }

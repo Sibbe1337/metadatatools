@@ -5,53 +5,65 @@ import (
 	"time"
 )
 
-// Session represents a user session
-type Session struct {
-	ID           string    `json:"id"`
-	UserID       string    `json:"user_id"`
-	RefreshToken string    `json:"refresh_token"`
-	UserAgent    string    `json:"user_agent"`
-	IP           string    `json:"ip"`
-	ExpiresAt    time.Time `json:"expires_at"`
-	CreatedAt    time.Time `json:"created_at"`
-	LastSeenAt   time.Time `json:"last_seen_at"`
-}
-
-// SessionStore defines the interface for session management
-type SessionStore interface {
-	// Create creates a new session
-	Create(ctx context.Context, session *Session) error
-
-	// Get retrieves a session by ID
-	Get(ctx context.Context, sessionID string) (*Session, error)
-
-	// GetUserSessions retrieves all active sessions for a user
-	GetUserSessions(ctx context.Context, userID string) ([]*Session, error)
-
-	// Update updates an existing session
-	Update(ctx context.Context, session *Session) error
-
-	// Delete removes a session
-	Delete(ctx context.Context, sessionID string) error
-
-	// DeleteUserSessions removes all sessions for a user
-	DeleteUserSessions(ctx context.Context, userID string) error
-
-	// DeleteExpired removes all expired sessions
-	DeleteExpired(ctx context.Context) error
-
-	// Touch updates the last seen time of a session
-	Touch(ctx context.Context, sessionID string) error
-}
-
 // SessionConfig holds configuration for session management
 type SessionConfig struct {
-	// SessionDuration is how long a session should last
-	SessionDuration time.Duration
+	// Cookie settings
+	CookieName     string `json:"cookie_name"`
+	CookieDomain   string `json:"cookie_domain"`
+	CookiePath     string `json:"cookie_path"`
+	CookieSecure   bool   `json:"cookie_secure"`
+	CookieHTTPOnly bool   `json:"cookie_http_only"`
+	CookieSameSite string `json:"cookie_same_site"`
 
-	// CleanupInterval is how often to run the cleanup job
-	CleanupInterval time.Duration
+	// Session settings
+	SessionDuration    time.Duration `json:"session_duration"`
+	CleanupInterval    time.Duration `json:"cleanup_interval"`
+	MaxSessionsPerUser int           `json:"max_sessions_per_user"`
+}
 
-	// MaxSessionsPerUser is the maximum number of concurrent sessions per user
-	MaxSessionsPerUser int
+// Session represents a user session
+type Session struct {
+	ID          string       `json:"id"`
+	UserID      string       `json:"user_id"`
+	Role        Role         `json:"role"`
+	Permissions []Permission `json:"permissions"`
+	UserAgent   string       `json:"user_agent"`
+	IP          string       `json:"ip"`
+	ExpiresAt   time.Time    `json:"expires_at"`
+	CreatedAt   time.Time    `json:"created_at"`
+	LastSeenAt  time.Time    `json:"last_seen_at"`
+}
+
+// HasPermission checks if the session has the given permission
+func (s *Session) HasPermission(p Permission) bool {
+	for _, perm := range s.Permissions {
+		if perm == p {
+			return true
+		}
+	}
+	return false
+}
+
+// IsExpired checks if the session has expired
+func (s *Session) IsExpired() bool {
+	return time.Now().After(s.ExpiresAt)
+}
+
+// SessionRepository defines the interface for session persistence
+type SessionRepository interface {
+	Create(ctx context.Context, session *Session) error
+	GetByID(ctx context.Context, id string) (*Session, error)
+	GetUserSessions(ctx context.Context, userID string) ([]*Session, error)
+	Delete(ctx context.Context, id string) error
+	DeleteUserSessions(ctx context.Context, userID string) error
+}
+
+// SessionStore defines the interface for session storage
+type SessionStore interface {
+	Create(ctx context.Context, session *Session) error
+	Get(ctx context.Context, id string) (*Session, error)
+	Delete(ctx context.Context, id string) error
+	Touch(ctx context.Context, id string) error
+	GetUserSessions(ctx context.Context, userID string) ([]*Session, error)
+	DeleteUserSessions(ctx context.Context, userID string) error
 }

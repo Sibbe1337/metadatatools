@@ -4,11 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"metadatatool/internal/pkg/domain"
+	"metadatatool/internal/domain"
 	"sync"
 	"time"
-
-	pkgconfig "metadatatool/internal/pkg/config"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -24,13 +22,13 @@ const (
 // RedisSessionStore implements the domain.SessionStore interface using Redis
 type RedisSessionStore struct {
 	client    *redis.Client
-	config    pkgconfig.SessionConfig
+	config    domain.SessionConfig
 	closeOnce sync.Once
 	done      chan struct{}
 }
 
 // NewSessionStore creates a new Redis session store
-func NewSessionStore(client *redis.Client, config pkgconfig.SessionConfig) *RedisSessionStore {
+func NewSessionStore(client *redis.Client, config domain.SessionConfig) domain.SessionStore {
 	store := &RedisSessionStore{
 		client: client,
 		config: config,

@@ -3,73 +3,58 @@ package middleware
 import (
 	"metadatatool/internal/pkg/domain"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
 
-// Auth creates a middleware for JWT authentication
+// Auth middleware validates JWT tokens and sets claims in the context
 func Auth(authService domain.AuthService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := c.GetHeader("Authorization")
 		if token == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing authorization header"})
-			c.Abort()
+			c.AbortWithStatus(http.StatusUnauthorized)
 			return
 		}
 
 		// Remove "Bearer " prefix if present
-		if len(token) > 7 && token[:7] == "Bearer " {
-			token = token[7:]
-		}
+		token = strings.TrimPrefix(token, "Bearer ")
 
 		claims, err := authService.ValidateToken(token)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
-			c.Abort()
+			c.AbortWithStatus(http.StatusUnauthorized)
 			return
 		}
 
-		// Store claims in context for later use
-		c.Set("user", claims)
+		c.Set("claims", claims)
 		c.Next()
 	}
 }
 
-// RequirePermission creates a middleware that checks for specific permissions
-func RequirePermission(authService domain.AuthService, requiredPermission domain.Permission) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		claims, exists := c.Get("user")
-		if !exists {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-			c.Abort()
-			return
-		}
-
-		userClaims := claims.(*domain.Claims)
-		if !authService.HasPermission(userClaims.Role, requiredPermission) {
-			c.JSON(http.StatusForbidden, gin.H{"error": "insufficient permissions"})
-			c.Abort()
-			return
-		}
-
-		c.Next()
-	}
-}
-
-// RequireRole creates a middleware that checks for specific roles
+// RequireRole middleware ensures the user has the required role
 func RequireRole(requiredRole domain.Role) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		claims, exists := c.Get("user")
+		role, exists := c.Get("role")
 		if !exists {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-			c.Abort()
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "No role found"})
 			return
 		}
 
-		userClaims := claims.(*domain.Claims)
-		if userClaims.Role != requiredRole {
-			c.JSON(http.StatusForbidden, gin.H{"error": "insufficient role"})
-			c.Abort()
+		userRole, ok := role.(domain.Role)
+		if !ok {
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Invalid role type"})
+			return
+		}
+
+		// Admin role can access everything
+		if userRole == domain.RoleAdmin {
+			c.Next()
+			return
+		}
+
+		// For other roles, check if they match the required role
+		if userRole != requiredRole {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "Insufficient permissions"})
 			return
 		}
 
@@ -77,33 +62,44 @@ func RequireRole(requiredRole domain.Role) gin.HandlerFunc {
 	}
 }
 
-// APIKeyAuth creates a middleware for API key authentication
+// RequirePermission middleware ensures the user has the required permission
+func RequirePermission(permission domain.Permission) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		claims, exists := c.Get("claims")
+		if !exists {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "No claims found"})
+			return
+		}
+
+		userClaims := claims.(*domain.Claims)
+		for _, p := range userClaims.Permissions {
+			if p == permission {
+				c.Next()
+				return
+			}
+		}
+
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "Insufficient permissions"})
+	}
+}
+
+// APIKeyAuth middleware validates API keys
 func APIKeyAuth(userRepo domain.UserRepository) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		apiKey := c.GetHeader("X-API-Key")
 		if apiKey == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing API key"})
-			c.Abort()
+			c.AbortWithStatus(http.StatusUnauthorized)
 			return
 		}
 
-		user, err := userRepo.GetByAPIKey(c, apiKey)
+		user, err := userRepo.GetByAPIKey(c.Request.Context(), apiKey)
 		if err != nil || user == nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid API key"})
-			c.Abort()
+			c.AbortWithStatus(http.StatusUnauthorized)
 			return
 		}
 
-		// Create claims for API key authentication
-		claims := &domain.Claims{
-			UserID:      user.ID,
-			Email:       user.Email,
-			Role:        user.Role,
-			Permissions: domain.RolePermissions[user.Role],
-		}
-
-		// Store claims in context
-		c.Set("user", claims)
+		c.Set("user", user)
+		c.Set("role", user.Role)
 		c.Next()
 	}
 }

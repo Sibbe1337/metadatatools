@@ -1,0 +1,13 @@
+FROM vllm/vllm-openai:latest
+
+# Install additional dependencies if needed
+RUN pip install --no-cache-dir transformers
+
+# Set environment variables
+ENV MODEL_NAME="Qwen/Qwen2.5-7B-Instruct"
+ENV PORT=8080
+
+# Start the vLLM server
+CMD ["python", "-m", "vllm.entrypoints.openai.api_server", \
+     "--model", "${MODEL_NAME}", \
+     "--port", "${PORT}"] 

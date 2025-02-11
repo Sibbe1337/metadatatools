@@ -1,5 +1,9 @@
 package domain
 
+import (
+	"github.com/golang-jwt/jwt/v5"
+)
+
 // Permission represents a specific action that can be performed
 type Permission string
 
@@ -20,6 +24,16 @@ const (
 
 	// API key permissions
 	PermissionManageAPIKeys Permission = "apikeys:manage"
+)
+
+// Role represents user authorization level
+type Role string
+
+const (
+	RoleAdmin  Role = "admin"
+	RoleUser   Role = "user"
+	RoleGuest  Role = "guest"
+	RoleSystem Role = "system"
 )
 
 // RolePermissions maps roles to their allowed permissions
@@ -49,10 +63,11 @@ var RolePermissions = map[Role][]Permission{
 
 // Claims represents JWT claims with added role information
 type Claims struct {
-	UserID      string
-	Email       string
-	Role        Role
-	Permissions []Permission
+	UserID      string       `json:"user_id"`
+	Email       string       `json:"email"`
+	Role        Role         `json:"role"`
+	Permissions []Permission `json:"permissions"`
+	jwt.RegisteredClaims
 }
 
 // TokenPair represents an access and refresh token pair

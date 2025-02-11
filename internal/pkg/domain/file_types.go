@@ -43,23 +43,22 @@ type FileMetadata struct {
 
 // StorageService defines the interface for storage operations
 type StorageService interface {
-	// Upload stores a file in cloud storage
+	// Core file operations
 	Upload(ctx context.Context, file *StorageFile) error
-
-	// Download retrieves a file from cloud storage
 	Download(ctx context.Context, key string) (*StorageFile, error)
-
-	// Delete removes a file from cloud storage
 	Delete(ctx context.Context, key string) error
-
-	// GetURL retrieves a pre-signed URL for an audio file
 	GetURL(ctx context.Context, key string) (string, error)
-
-	// GetMetadata retrieves metadata for a file
 	GetMetadata(ctx context.Context, key string) (*FileMetadata, error)
-
-	// ListFiles lists files with the given prefix
 	ListFiles(ctx context.Context, prefix string) ([]*FileMetadata, error)
+
+	// Audio-specific operations
+	UploadAudio(ctx context.Context, file io.Reader, path string) error
+	DeleteAudio(ctx context.Context, path string) error
+	GetSignedURL(ctx context.Context, path string, expiry time.Duration) (string, error)
+
+	// Quota and validation
+	GetQuotaUsage(ctx context.Context) (int64, error)
+	ValidateUpload(ctx context.Context, fileSize int64, mimeType string) error
 }
 
 // StorageClient defines the interface for low-level storage operations

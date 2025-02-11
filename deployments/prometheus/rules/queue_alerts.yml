@@ -1,0 +1,55 @@
+groups:
+  - name: queue_alerts
+    rules:
+      - alert: HighMessageProcessingLatency
+        expr: |
+          rate(queue_processing_latency_seconds_sum[5m]) / 
+          rate(queue_processing_latency_seconds_count[5m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: High message processing latency
+          description: Message processing latency is above 5 seconds for subscription {{ $labels.subscription }}
+
+      - alert: HighDeadLetterRate
+        expr: rate(queue_dead_letters_total[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: High dead letter rate
+          description: Dead letter rate is above 10 messages/minute for message type {{ $labels.type }}
+
+      - alert: HighErrorRate
+        expr: |
+          (
+            rate(queue_publish_errors_total[5m]) +
+            rate(queue_processing_errors_total[5m])
+          ) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: High error rate in queue operations
+          description: Error rate is above 5 errors/minute for queue operations
+
+      - alert: QueueProcessingStalled
+        expr: |
+          rate(queue_messages_processed_total[15m]) == 0 and
+          rate(queue_messages_published_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Queue processing has stalled
+          description: Messages are being published but not processed for subscription {{ $labels.subscription }}
+
+      - alert: SubscriptionErrors
+        expr: rate(queue_subscription_errors_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Subscription errors detected
+          description: Subscription errors detected for {{ $labels.subscription }} 

@@ -2,13 +2,14 @@ package redis
 
 import (
 	"context"
-	"metadatatool/internal/pkg/domain"
+	"metadatatool/internal/domain"
+	"metadatatool/internal/pkg/config"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
-	"github.com/go-redis/redis/v8"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -27,254 +28,300 @@ func setupTestRedis(t *testing.T) (*redis.Client, func()) {
 	}
 }
 
-func createTestSession(userID string) *domain.Session {
+func createTestSession() *domain.Session {
+	now := time.Now()
 	return &domain.Session{
-		ID:           uuid.NewString(),
-		UserID:       userID,
-		RefreshToken: uuid.NewString(),
-		UserAgent:    "test-agent",
-		IP:           "127.0.0.1",
-		CreatedAt:    time.Now(),
-		LastSeenAt:   time.Now(),
-		ExpiresAt:    time.Now().Add(24 * time.Hour),
+		ID:          uuid.New().String(),
+		UserID:      uuid.New().String(),
+		Role:        domain.RoleUser,
+		Permissions: []domain.Permission{domain.PermissionReadTrack},
+		UserAgent:   "test-agent",
+		IP:          "127.0.0.1",
+		ExpiresAt:   now.Add(24 * time.Hour),
+		CreatedAt:   now,
+		LastSeenAt:  now,
 	}
 }
 
-func TestSessionStore_Create(t *testing.T) {
+func configToDomainConfig(cfg config.SessionConfig) domain.SessionConfig {
+	return domain.SessionConfig{
+		CookieName:         cfg.CookieName,
+		CookiePath:         cfg.CookiePath,
+		CookieDomain:       cfg.CookieDomain,
+		CookieSecure:       cfg.CookieSecure,
+		CookieHTTPOnly:     cfg.CookieHTTPOnly,
+		CookieSameSite:     cfg.CookieSameSite,
+		MaxSessionsPerUser: cfg.MaxSessionsPerUser,
+		SessionDuration:    cfg.SessionDuration,
+		CleanupInterval:    cfg.CleanupInterval,
+	}
+}
+
+func TestRedisSessionStore_Create(t *testing.T) {
 	client, cleanup := setupTestRedis(t)
 	defer cleanup()
 
-	cfg := &domain.SessionConfig{
+	cfg := config.SessionConfig{
+		CookieName:         "session",
+		CookieDomain:       "",
+		CookiePath:         "/",
+		CookieSecure:       true,
+		CookieHTTPOnly:     true,
+		CookieSameSite:     "lax",
 		SessionDuration:    24 * time.Hour,
 		CleanupInterval:    time.Hour,
 		MaxSessionsPerUser: 2,
 	}
 
-	store := NewSessionStore(client, cfg)
-	ctx := context.Background()
+	store := NewSessionStore(client, configToDomainConfig(cfg))
 
 	t.Run("successful creation", func(t *testing.T) {
-		session := createTestSession("user1")
-		err := store.Create(ctx, session)
-		assert.NoError(t, err)
+		session := createTestSession()
+		err := store.Create(context.Background(), session)
+		require.NoError(t, err)
 
 		// Verify session was stored
-		stored, err := store.Get(ctx, session.ID)
-		assert.NoError(t, err)
+		stored, err := store.Get(context.Background(), session.ID)
+		require.NoError(t, err)
 		assert.Equal(t, session.ID, stored.ID)
 		assert.Equal(t, session.UserID, stored.UserID)
 	})
 
-	t.Run("enforce max sessions per user", func(t *testing.T) {
-		// Create max number of sessions
-		for i := 0; i < cfg.MaxSessionsPerUser; i++ {
-			session := createTestSession("user2")
-			err := store.Create(ctx, session)
-			assert.NoError(t, err)
-		}
+	t.Run("max sessions limit", func(t *testing.T) {
+		userID := uuid.New().String()
 
-		// Try to create one more session
-		session := createTestSession("user2")
-		err := store.Create(ctx, session)
+		// Create first session
+		session1 := createTestSession()
+		session1.UserID = userID
+		err := store.Create(context.Background(), session1)
+		require.NoError(t, err)
+
+		// Create second session
+		session2 := createTestSession()
+		session2.UserID = userID
+		err = store.Create(context.Background(), session2)
+		require.NoError(t, err)
+
+		// Try to create third session
+		session3 := createTestSession()
+		session3.UserID = userID
+		err = store.Create(context.Background(), session3)
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "maximum number of sessions")
+		assert.Contains(t, err.Error(), "maximum number of sessions reached")
 	})
 }
 
-func TestSessionStore_Get(t *testing.T) {
+func TestRedisSessionStore_Get(t *testing.T) {
 	client, cleanup := setupTestRedis(t)
 	defer cleanup()
 
-	cfg := &domain.SessionConfig{
+	cfg := config.SessionConfig{
+		CookieName:         "session",
+		CookieDomain:       "",
+		CookiePath:         "/",
+		CookieSecure:       true,
+		CookieHTTPOnly:     true,
+		CookieSameSite:     "lax",
 		SessionDuration:    24 * time.Hour,
 		CleanupInterval:    time.Hour,
 		MaxSessionsPerUser: 2,
 	}
 
-	store := NewSessionStore(client, cfg)
-	ctx := context.Background()
+	store := NewSessionStore(client, configToDomainConfig(cfg))
 
 	t.Run("get existing session", func(t *testing.T) {
-		session := createTestSession("user1")
-		err := store.Create(ctx, session)
+		session := createTestSession()
+		err := store.Create(context.Background(), session)
 		require.NoError(t, err)
 
-		stored, err := store.Get(ctx, session.ID)
-		assert.NoError(t, err)
-		assert.NotNil(t, stored)
+		stored, err := store.Get(context.Background(), session.ID)
+		require.NoError(t, err)
 		assert.Equal(t, session.ID, stored.ID)
+		assert.Equal(t, session.UserID, stored.UserID)
+		assert.Equal(t, session.Role, stored.Role)
+		assert.Equal(t, session.Permissions, stored.Permissions)
 	})
 
 	t.Run("get non-existent session", func(t *testing.T) {
-		stored, err := store.Get(ctx, "non-existent")
-		assert.NoError(t, err)
-		assert.Nil(t, stored)
+		_, err := store.Get(context.Background(), "non-existent")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "session not found")
 	})
 }
 
-func TestSessionStore_GetUserSessions(t *testing.T) {
+func TestRedisSessionStore_GetUserSessions(t *testing.T) {
 	client, cleanup := setupTestRedis(t)
 	defer cleanup()
 
-	cfg := &domain.SessionConfig{
+	cfg := config.SessionConfig{
+		CookieName:         "session",
+		CookieDomain:       "",
+		CookiePath:         "/",
+		CookieSecure:       true,
+		CookieHTTPOnly:     true,
+		CookieSameSite:     "lax",
 		SessionDuration:    24 * time.Hour,
 		CleanupInterval:    time.Hour,
 		MaxSessionsPerUser: 5,
 	}
 
-	store := NewSessionStore(client, cfg)
-	ctx := context.Background()
+	store := NewSessionStore(client, configToDomainConfig(cfg))
 
-	t.Run("get all user sessions", func(t *testing.T) {
-		userID := "user1"
-		var createdSessions []*domain.Session
+	t.Run("get multiple user sessions", func(t *testing.T) {
+		userID := uuid.New().String()
 
-		// Create multiple sessions
-		for i := 0; i < 3; i++ {
-			session := createTestSession(userID)
-			err := store.Create(ctx, session)
-			require.NoError(t, err)
-			createdSessions = append(createdSessions, session)
+		// Create two sessions for the same user
+		session1 := createTestSession()
+		session1.UserID = userID
+		session2 := createTestSession()
+		session2.UserID = userID
+
+		require.NoError(t, store.Create(context.Background(), session1))
+		require.NoError(t, store.Create(context.Background(), session2))
+
+		// Get user sessions
+		sessions, err := store.GetUserSessions(context.Background(), userID)
+		require.NoError(t, err)
+		assert.Len(t, sessions, 2)
+
+		// Verify session IDs
+		sessionIDs := map[string]bool{
+			sessions[0].ID: true,
+			sessions[1].ID: true,
 		}
-
-		// Get all sessions
-		sessions, err := store.GetUserSessions(ctx, userID)
-		assert.NoError(t, err)
-		assert.Len(t, sessions, len(createdSessions))
-
-		// Verify each session
-		sessionMap := make(map[string]*domain.Session)
-		for _, s := range sessions {
-			sessionMap[s.ID] = s
-		}
-
-		for _, created := range createdSessions {
-			stored, exists := sessionMap[created.ID]
-			assert.True(t, exists)
-			assert.Equal(t, created.UserID, stored.UserID)
-		}
+		assert.True(t, sessionIDs[session1.ID])
+		assert.True(t, sessionIDs[session2.ID])
 	})
 
 	t.Run("get sessions for user with no sessions", func(t *testing.T) {
-		sessions, err := store.GetUserSessions(ctx, "non-existent")
-		assert.NoError(t, err)
+		sessions, err := store.GetUserSessions(context.Background(), "non-existent")
+		require.NoError(t, err)
 		assert.Empty(t, sessions)
 	})
 }
 
-func TestSessionStore_Delete(t *testing.T) {
+func TestRedisSessionStore_Delete(t *testing.T) {
 	client, cleanup := setupTestRedis(t)
 	defer cleanup()
 
-	cfg := &domain.SessionConfig{
+	cfg := config.SessionConfig{
+		CookieName:         "session",
+		CookieDomain:       "",
+		CookiePath:         "/",
+		CookieSecure:       true,
+		CookieHTTPOnly:     true,
+		CookieSameSite:     "lax",
 		SessionDuration:    24 * time.Hour,
 		CleanupInterval:    time.Hour,
 		MaxSessionsPerUser: 2,
 	}
 
-	store := NewSessionStore(client, cfg)
-	ctx := context.Background()
+	store := NewSessionStore(client, configToDomainConfig(cfg))
 
 	t.Run("delete existing session", func(t *testing.T) {
-		session := createTestSession("user1")
-		err := store.Create(ctx, session)
+		session := createTestSession()
+		err := store.Create(context.Background(), session)
 		require.NoError(t, err)
 
 		// Delete session
-		err = store.Delete(ctx, session.ID)
-		assert.NoError(t, err)
+		err = store.Delete(context.Background(), session.ID)
+		require.NoError(t, err)
 
-		// Verify session was deleted
-		stored, err := store.Get(ctx, session.ID)
-		assert.NoError(t, err)
-		assert.Nil(t, stored)
-
-		// Verify session was removed from user sessions
-		sessions, err := store.GetUserSessions(ctx, session.UserID)
-		assert.NoError(t, err)
-		assert.Empty(t, sessions)
+		// Verify deletion
+		_, err = store.Get(context.Background(), session.ID)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "session not found")
 	})
 
 	t.Run("delete non-existent session", func(t *testing.T) {
-		err := store.Delete(ctx, "non-existent")
-		assert.NoError(t, err)
+		err := store.Delete(context.Background(), "non-existent")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "session not found")
 	})
 }
 
-func TestSessionStore_DeleteUserSessions(t *testing.T) {
+func TestRedisSessionStore_DeleteUserSessions(t *testing.T) {
 	client, cleanup := setupTestRedis(t)
 	defer cleanup()
 
-	cfg := &domain.SessionConfig{
+	cfg := config.SessionConfig{
+		CookieName:         "session",
+		CookieDomain:       "",
+		CookiePath:         "/",
+		CookieSecure:       true,
+		CookieHTTPOnly:     true,
+		CookieSameSite:     "lax",
 		SessionDuration:    24 * time.Hour,
 		CleanupInterval:    time.Hour,
 		MaxSessionsPerUser: 5,
 	}
 
-	store := NewSessionStore(client, cfg)
-	ctx := context.Background()
+	store := NewSessionStore(client, configToDomainConfig(cfg))
 
 	t.Run("delete all user sessions", func(t *testing.T) {
-		userID := "user1"
+		userID := uuid.New().String()
 
 		// Create multiple sessions
-		for i := 0; i < 3; i++ {
-			session := createTestSession(userID)
-			err := store.Create(ctx, session)
-			require.NoError(t, err)
-		}
+		session1 := createTestSession()
+		session1.UserID = userID
+		session2 := createTestSession()
+		session2.UserID = userID
 
-		// Delete all sessions
-		err := store.DeleteUserSessions(ctx, userID)
-		assert.NoError(t, err)
+		require.NoError(t, store.Create(context.Background(), session1))
+		require.NoError(t, store.Create(context.Background(), session2))
 
-		// Verify all sessions were deleted
-		sessions, err := store.GetUserSessions(ctx, userID)
-		assert.NoError(t, err)
+		// Delete all user sessions
+		err := store.DeleteUserSessions(context.Background(), userID)
+		require.NoError(t, err)
+
+		// Verify deletion
+		sessions, err := store.GetUserSessions(context.Background(), userID)
+		require.NoError(t, err)
 		assert.Empty(t, sessions)
-	})
-
-	t.Run("delete sessions for user with no sessions", func(t *testing.T) {
-		err := store.DeleteUserSessions(ctx, "non-existent")
-		assert.NoError(t, err)
 	})
 }
 
-func TestSessionStore_Touch(t *testing.T) {
+func TestRedisSessionStore_Touch(t *testing.T) {
 	client, cleanup := setupTestRedis(t)
 	defer cleanup()
 
-	cfg := &domain.SessionConfig{
+	cfg := config.SessionConfig{
+		CookieName:         "session",
+		CookieDomain:       "",
+		CookiePath:         "/",
+		CookieSecure:       true,
+		CookieHTTPOnly:     true,
+		CookieSameSite:     "lax",
 		SessionDuration:    24 * time.Hour,
 		CleanupInterval:    time.Hour,
 		MaxSessionsPerUser: 2,
 	}
 
-	store := NewSessionStore(client, cfg)
-	ctx := context.Background()
+	store := NewSessionStore(client, configToDomainConfig(cfg))
 
 	t.Run("touch existing session", func(t *testing.T) {
-		session := createTestSession("user1")
-		originalLastSeen := session.LastSeenAt
-		err := store.Create(ctx, session)
+		session := createTestSession()
+		err := store.Create(context.Background(), session)
 		require.NoError(t, err)
 
-		// Wait a moment to ensure time difference
+		// Get initial last seen time
+		initialLastSeen := session.LastSeenAt
+
+		// Wait a bit to ensure time difference
 		time.Sleep(time.Millisecond * 100)
 
 		// Touch session
-		err = store.Touch(ctx, session.ID)
-		assert.NoError(t, err)
+		err = store.Touch(context.Background(), session.ID)
+		require.NoError(t, err)
 
-		// Verify last seen time was updated
-		stored, err := store.Get(ctx, session.ID)
-		assert.NoError(t, err)
-		assert.NotNil(t, stored)
-		assert.True(t, stored.LastSeenAt.After(originalLastSeen))
+		// Verify touch
+		updated, err := store.Get(context.Background(), session.ID)
+		require.NoError(t, err)
+		assert.True(t, updated.LastSeenAt.After(initialLastSeen))
 	})
 
 	t.Run("touch non-existent session", func(t *testing.T) {
-		err := store.Touch(ctx, "non-existent")
+		err := store.Touch(context.Background(), "non-existent")
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "session not found")
 	})

@@ -1,32 +1,19 @@
 package domain
 
 import (
-	"time"
 	"unicode"
 )
 
-// ValidationResult represents the result of validating track metadata.
+// ValidationResult represents the result of a validation check
 type ValidationResult struct {
-	// Valid indicates if the metadata is valid
-	Valid bool
-
-	// Confidence is the AI model's confidence in the validation (0-1)
-	Confidence float64
-
-	// Issues contains any validation issues found
-	Issues []ValidationIssue
+	IsValid bool              `json:"is_valid"`
+	Errors  []ValidationError `json:"errors,omitempty"`
 }
 
-// ValidationIssue represents a single validation issue found.
-type ValidationIssue struct {
-	// Field is the name of the field with the issue
-	Field string
-
-	// Message describes the validation issue
-	Message string
-
-	// Severity indicates how serious the issue is (1-5)
-	Severity int
+// ValidationError represents a single validation error
+type ValidationError struct {
+	Field   string `json:"field"`
+	Message string `json:"message"`
 }
 
 // Validator defines the interface for track validation
@@ -35,103 +22,72 @@ type Validator interface {
 	Validate(track *Track) ValidationResult
 }
 
-// TrackValidator implements the Validator interface for tracks
+// ValidationIssue represents a validation issue found during validation
+type ValidationIssue struct {
+	Field       string `json:"field"`
+	Severity    string `json:"severity"`
+	Description string `json:"description"`
+}
+
+// ValidationSuggestion represents a metadata improvement suggestion
+type ValidationSuggestion struct {
+	Field          string `json:"field"`
+	CurrentValue   string `json:"current_value"`
+	SuggestedValue string `json:"suggested_value"`
+	Reason         string `json:"reason"`
+}
+
+// ValidationResponse represents the complete validation response from an AI service
+type ValidationResponse struct {
+	ConfidenceScores struct {
+		TitleArtistMatch     float64 `json:"title_artist_match"`
+		GenreAccuracy        float64 `json:"genre_accuracy"`
+		MusicalConsistency   float64 `json:"musical_consistency"`
+		MetadataCompleteness float64 `json:"metadata_completeness"`
+		Overall              float64 `json:"overall"`
+	} `json:"confidence_scores"`
+	Issues      []ValidationIssue      `json:"issues"`
+	Suggestions []ValidationSuggestion `json:"suggestions"`
+	Analysis    string                 `json:"analysis"`
+}
+
+// TrackValidator implements the Validator interface
 type TrackValidator struct{}
 
-// NewTrackValidator creates a new TrackValidator instance
+// NewTrackValidator creates a new track validator
 func NewTrackValidator() *TrackValidator {
 	return &TrackValidator{}
 }
 
-// Validate implements comprehensive track validation
+// Validate validates a track and returns the validation result
 func (v *TrackValidator) Validate(track *Track) ValidationResult {
-	var issues []ValidationIssue
+	var errors []ValidationError
 
 	// Required fields validation
 	if track.Title() == "" {
-		issues = append(issues, ValidationIssue{
-			Field:    "title",
-			Message:  "Title is required",
-			Severity: 5,
+		errors = append(errors, ValidationError{
+			Field:   "title",
+			Message: "Title is required",
 		})
 	}
 
 	if track.Artist() == "" {
-		issues = append(issues, ValidationIssue{
-			Field:    "artist",
-			Message:  "Artist is required",
-			Severity: 5,
+		errors = append(errors, ValidationError{
+			Field:   "artist",
+			Message: "Artist is required",
 		})
 	}
 
-	// ISRC validation
-	if isrc := track.ISRC(); isrc != "" && !isValidISRC(isrc) {
-		issues = append(issues, ValidationIssue{
-			Field:    "isrc",
-			Message:  "Invalid ISRC format",
-			Severity: 4,
-		})
-	}
-
-	// Duration validation
-	if duration := track.Duration(); duration <= 0 {
-		issues = append(issues, ValidationIssue{
-			Field:    "duration",
-			Message:  "Duration must be positive",
-			Severity: 4,
-		})
-	}
-
-	// Year validation
-	if year := track.Year(); year != 0 {
-		currentYear := time.Now().Year()
-		if year < 1900 || year > currentYear+1 {
-			issues = append(issues, ValidationIssue{
-				Field:    "year",
-				Message:  "Year must be between 1900 and next year",
-				Severity: 3,
-			})
-		}
-	}
-
-	// Technical metadata validation
-	if format := track.AudioFormat(); format != "" && !isValidAudioFormat(format) {
-		issues = append(issues, ValidationIssue{
-			Field:    "format",
-			Message:  "Unsupported audio format",
-			Severity: 4,
-		})
-	}
-
-	if bitrate := track.Bitrate(); bitrate != 0 && !isValidBitrate(bitrate) {
-		issues = append(issues, ValidationIssue{
-			Field:    "bitrate",
-			Message:  "Invalid bitrate",
-			Severity: 3,
-		})
-	}
-
-	if sampleRate := track.SampleRate(); sampleRate != 0 && !isValidSampleRate(sampleRate) {
-		issues = append(issues, ValidationIssue{
-			Field:    "sampleRate",
-			Message:  "Invalid sample rate",
-			Severity: 3,
-		})
-	}
-
-	// BPM validation
-	if bpm := track.BPM(); bpm != 0 && !isValidBPM(bpm) {
-		issues = append(issues, ValidationIssue{
-			Field:    "bpm",
-			Message:  "BPM must be between 20 and 400",
-			Severity: 2,
+	if track.ISRC() != "" && !isValidISRC(track.ISRC()) {
+		errors = append(errors, ValidationError{
+			Field:   "isrc",
+			Message: "Invalid ISRC format",
 		})
 	}
 
 	return ValidationResult{
-		Valid:      len(issues) == 0,
-		Confidence: 1.0, // For non-AI validation
-		Issues:     issues,
+		IsValid: len(errors) == 0,
+		Errors:  errors,
 	}
 }
 

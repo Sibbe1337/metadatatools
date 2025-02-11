@@ -3,19 +3,20 @@ package usecase
 import (
 	"context"
 	"fmt"
-	"metadatatool/internal/config"
+	"metadatatool/internal/pkg/config"
 	"metadatatool/internal/pkg/metrics"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 )
 
+// CacheService handles caching operations
 type CacheService struct {
 	client *redis.Client
 	cfg    *config.RedisConfig
 }
 
-// NewCacheService creates a new Redis cache service
+// NewCacheService creates a new cache service
 func NewCacheService(client *redis.Client, cfg *config.RedisConfig) *CacheService {
 	return &CacheService{
 		client: client,

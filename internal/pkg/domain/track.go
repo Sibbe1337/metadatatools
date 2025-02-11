@@ -184,7 +184,7 @@ type TrackRepository interface {
 	Delete(ctx context.Context, id string) error
 
 	// List retrieves tracks based on filters with pagination
-	List(ctx context.Context, filters map[string]interface{}, offset, limit int) ([]*Track, error)
+	List(ctx context.Context, filter map[string]interface{}, offset, limit int) ([]*Track, error)
 
 	// SearchByMetadata searches tracks by metadata fields
 	SearchByMetadata(ctx context.Context, query map[string]interface{}) ([]*Track, error)

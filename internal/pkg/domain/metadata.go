@@ -64,13 +64,16 @@ type MusicalMetadata struct {
 
 // TrackAIMetadata contains AI-generated metadata and processing information
 type TrackAIMetadata struct {
-	Tags         []string  `json:"tags"`
-	Confidence   float64   `json:"confidence"`
-	Model        string    `json:"model"`
-	Version      string    `json:"version"`
-	ProcessedAt  time.Time `json:"processedAt"`
-	NeedsReview  bool      `json:"needsReview"`
-	ReviewReason string    `json:"reviewReason,omitempty"`
+	Tags                  []string               `json:"tags"`
+	Confidence            float64                `json:"confidence"`
+	Model                 string                 `json:"model"`
+	Version               string                 `json:"version"`
+	ProcessedAt           time.Time              `json:"processedAt"`
+	NeedsReview           bool                   `json:"needsReview"`
+	ReviewReason          string                 `json:"reviewReason,omitempty"`
+	Analysis              string                 `json:"analysis,omitempty"`
+	ValidationIssues      []ValidationIssue      `json:"validationIssues,omitempty"`
+	ValidationSuggestions []ValidationSuggestion `json:"validationSuggestions,omitempty"`
 }
 
 // AdditionalMetadata contains supplementary metadata fields

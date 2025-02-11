@@ -4,13 +4,12 @@ import (
 	"time"
 )
 
-// Role represents user access levels
-type Role string
-
+// Role constants
 const (
-	RoleAdmin     Role = "admin"
-	RoleLabelUser Role = "label_user"
-	RoleAPIUser   Role = "api_user"
+	RoleAdmin  = "admin"
+	RoleUser   = "user"
+	RoleGuest  = "guest"
+	RoleSystem = "system"
 )
 
 // User represents a system user with role-based permissions
@@ -19,7 +18,7 @@ type User struct {
 	Email    string `json:"email"`
 	Password string `json:"-"` // Never expose password in JSON
 	Name     string `json:"name"`
-	Role     Role   `json:"role"`
+	Role     string `json:"role"`
 	Company  string `json:"company"`
 	APIKey   string `json:"api_key,omitempty"`
 
@@ -67,5 +66,5 @@ type TokenPair struct {
 type Claims struct {
 	UserID string `json:"user_id"`
 	Email  string `json:"email"`
-	Role   Role   `json:"role"`
+	Role   string `json:"role"`
 }

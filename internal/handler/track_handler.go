@@ -2,14 +2,12 @@ package handler
 
 import (
 	"fmt"
-	"io"
 	"metadatatool/internal/pkg/domain"
 	apperrors "metadatatool/internal/pkg/errors"
 	"metadatatool/internal/pkg/errortracking"
 	"metadatatool/internal/pkg/metrics"
 	"metadatatool/internal/pkg/utils"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -21,27 +19,27 @@ import (
 
 // TrackHandler handles HTTP requests for track operations
 type TrackHandler struct {
-	trackRepo    domain.TrackRepository
-	aiService    domain.AIService
-	validator    domain.Validator
-	errorTracker *errortracking.ErrorTracker
-	storageRoot  string
+	trackRepo      domain.TrackRepository
+	aiService      domain.AIService
+	storageService domain.StorageService
+	validator      domain.Validator
+	errorTracker   *errortracking.ErrorTracker
 }
 
 // NewTrackHandler creates a new track handler
 func NewTrackHandler(
 	trackRepo domain.TrackRepository,
 	aiService domain.AIService,
+	storageService domain.StorageService,
 	validator domain.Validator,
 	errorTracker *errortracking.ErrorTracker,
-	storageRoot string,
 ) *TrackHandler {
 	return &TrackHandler{
-		trackRepo:    trackRepo,
-		aiService:    aiService,
-		validator:    validator,
-		errorTracker: errorTracker,
-		storageRoot:  storageRoot,
+		trackRepo:      trackRepo,
+		aiService:      aiService,
+		storageService: storageService,
+		validator:      validator,
+		errorTracker:   errorTracker,
 	}
 }
 
@@ -77,27 +75,28 @@ func (h *TrackHandler) UploadTrack(c *gin.Context) {
 		return
 	}
 
+	trackID := uuid.New().String()
 	audioFormat := utils.GetAudioFormat(header.Filename)
-	filename := fmt.Sprintf("%s%s", uuid.New().String(), filepath.Ext(header.Filename))
-	filepath := filepath.Join(h.storageRoot, filename)
+	storageKey := fmt.Sprintf("tracks/%s/audio%s", trackID, filepath.Ext(header.Filename))
 
-	// Create destination file
-	dst, err := os.Create(filepath)
-	if err != nil {
-		h.handleError(c, apperrors.NewInternalError("failed to create file", err))
-		return
+	// Upload file to storage
+	storageFile := &domain.StorageFile{
+		Key:         storageKey,
+		Name:        header.Filename,
+		Size:        header.Size,
+		ContentType: "audio/" + audioFormat,
+		Content:     file,
+		UploadedAt:  time.Now(),
 	}
-	defer dst.Close()
 
-	// Copy the uploaded file to the destination file
-	if _, err := io.Copy(dst, file); err != nil {
-		h.handleError(c, apperrors.NewInternalError("failed to save file", err))
+	if err := h.storageService.Upload(c.Request.Context(), storageFile); err != nil {
+		h.handleError(c, apperrors.NewInternalError("failed to upload file", err))
 		return
 	}
 
 	track := &domain.Track{
-		ID:          uuid.New().String(),
-		StoragePath: filepath,
+		ID:          trackID,
+		StoragePath: storageKey,
 		FileSize:    header.Size,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
@@ -119,10 +118,10 @@ func (h *TrackHandler) UploadTrack(c *gin.Context) {
 
 	// Validate track
 	result := h.validator.Validate(track)
-	if !result.Valid {
-		details := make([]string, len(result.Issues))
-		for i, issue := range result.Issues {
-			details[i] = fmt.Sprintf("%s: %s", issue.Field, issue.Message)
+	if !result.IsValid {
+		details := make([]string, len(result.Errors))
+		for i, err := range result.Errors {
+			details[i] = fmt.Sprintf("%s: %s", err.Field, err.Message)
 		}
 		h.handleError(c, apperrors.NewValidationError("invalid track data", strings.Join(details, "; ")))
 		return
@@ -184,10 +183,10 @@ func (h *TrackHandler) CreateTrack(c *gin.Context) {
 
 	// Additional validation using validator
 	result := h.validator.Validate(&track)
-	if !result.Valid {
-		details := make([]string, len(result.Issues))
-		for i, issue := range result.Issues {
-			details[i] = fmt.Sprintf("%s: %s", issue.Field, issue.Message)
+	if !result.IsValid {
+		details := make([]string, len(result.Errors))
+		for i, err := range result.Errors {
+			details[i] = fmt.Sprintf("%s: %s", err.Field, err.Message)
 		}
 		h.handleError(c, apperrors.NewValidationError("invalid track data", strings.Join(details, "; ")))
 		return
@@ -298,10 +297,10 @@ func (h *TrackHandler) UpdateTrack(c *gin.Context) {
 
 	// Additional validation using validator
 	result := h.validator.Validate(&updateData)
-	if !result.Valid {
-		details := make([]string, len(result.Issues))
-		for i, issue := range result.Issues {
-			details[i] = fmt.Sprintf("%s: %s", issue.Field, issue.Message)
+	if !result.IsValid {
+		details := make([]string, len(result.Errors))
+		for i, err := range result.Errors {
+			details[i] = fmt.Sprintf("%s: %s", err.Field, err.Message)
 		}
 		h.handleError(c, apperrors.NewValidationError("invalid track data", strings.Join(details, "; ")))
 		return
@@ -651,4 +650,34 @@ type ExportRequest struct {
 type ExportResponse struct {
 	Format string      `json:"format"`
 	Data   interface{} `json:"data"`
+}
+
+func (h *TrackHandler) UploadAudio(c *gin.Context) {
+	// TODO: Implement audio upload
+	c.JSON(http.StatusNotImplemented, gin.H{"error": "Not implemented"})
+}
+
+func (h *TrackHandler) GetAudioURL(c *gin.Context) {
+	// TODO: Implement get audio URL
+	c.JSON(http.StatusNotImplemented, gin.H{"error": "Not implemented"})
+}
+
+func (h *TrackHandler) ValidateERN(c *gin.Context) {
+	// TODO: Implement ERN validation
+	c.JSON(http.StatusNotImplemented, gin.H{"error": "Not implemented"})
+}
+
+func (h *TrackHandler) ImportERN(c *gin.Context) {
+	// TODO: Implement ERN import
+	c.JSON(http.StatusNotImplemented, gin.H{"error": "Not implemented"})
+}
+
+func (h *TrackHandler) ExportERN(c *gin.Context) {
+	// TODO: Implement ERN export
+	c.JSON(http.StatusNotImplemented, gin.H{"error": "Not implemented"})
+}
+
+// GetTrackRepo returns the track repository instance
+func (h *TrackHandler) GetTrackRepo() domain.TrackRepository {
+	return h.trackRepo
 }

@@ -31,8 +31,8 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"metadatatool/internal/config"
 	"metadatatool/internal/pkg/analytics"
+	"metadatatool/internal/pkg/config"
 	"metadatatool/internal/pkg/ddex"
 	"metadatatool/internal/pkg/domain"
 	"metadatatool/internal/repository/ai"
@@ -42,6 +42,8 @@ import (
 	"strings"
 
 	_ "github.com/lib/pq"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 )
 
 // Command line flags
@@ -87,7 +89,7 @@ func main() {
 	}
 }
 
-// services holds all the initialized services needed by the CLI
+// services holds all the service dependencies
 type services struct {
 	analytics *analytics.BigQueryService
 	ai        domain.AIService
@@ -107,11 +109,11 @@ func (s *services) cleanup() {
 }
 
 // initializeServices initializes all required services
-func initializeServices(cfg *config.Config) (*services, error) {
+func initializeServices(cfg *config.AppConfig) (*services, error) {
 	// Initialize BigQuery analytics
 	analyticsService, err := analytics.NewBigQueryService(
-		cfg.AI.Experiment.BigQueryProject,
-		cfg.AI.Experiment.BigQueryDataset,
+		cfg.Queue.ProjectID,
+		cfg.Queue.HighPriorityTopic,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize BigQuery: %w", err)
@@ -125,17 +127,24 @@ func initializeServices(cfg *config.Config) (*services, error) {
 		MaxConcurrentRequests: cfg.AI.BatchSize,
 		RetryAttempts:         3,
 		RetryBackoffSeconds:   5,
-		OpenAIConfig: &ai.OpenAIConfig{
-			APIKey:    cfg.AI.APIKey,
-			Endpoint:  cfg.AI.BaseURL,
-			Model:     cfg.AI.ModelName,
-			MaxTokens: cfg.AI.MaxTokens,
+		OpenAIConfig: &domain.OpenAIConfig{
+			APIKey:                cfg.AI.APIKey,
+			Endpoint:              cfg.AI.BaseURL,
+			TimeoutSeconds:        int(cfg.AI.Timeout.Seconds()),
+			MinConfidence:         cfg.AI.MinConfidence,
+			MaxConcurrentRequests: cfg.AI.BatchSize,
+			RetryAttempts:         3,
+			RetryBackoffSeconds:   5,
+			RequestsPerSecond:     10,
 		},
-		Qwen2Config: &ai.Qwen2Config{
-			APIKey:    cfg.AI.APIKey,
-			Endpoint:  cfg.AI.BaseURL,
-			Model:     cfg.AI.ModelName,
-			MaxTokens: cfg.AI.MaxTokens,
+		Qwen2Config: &domain.Qwen2Config{
+			APIKey:                cfg.AI.APIKey,
+			Endpoint:              cfg.AI.BaseURL,
+			TimeoutSeconds:        int(cfg.AI.Timeout.Seconds()),
+			MinConfidence:         cfg.AI.MinConfidence,
+			MaxConcurrentRequests: cfg.AI.BatchSize,
+			RetryAttempts:         3,
+			RetryBackoffSeconds:   5,
 		},
 	}
 
@@ -145,20 +154,27 @@ func initializeServices(cfg *config.Config) (*services, error) {
 	}
 
 	// Initialize database connection
-	db, err := sql.Open("postgres", fmt.Sprintf(
+	dbDSN := fmt.Sprintf(
 		"host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
 		cfg.Database.Host,
 		cfg.Database.Port,
 		cfg.Database.User,
 		cfg.Database.Password,
 		cfg.Database.DBName,
-	))
+	)
+	db, err := gorm.Open(postgres.Open(dbDSN), &gorm.Config{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
+	// Get underlying *sql.DB for cleanup
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get underlying *sql.DB: %w", err)
+	}
+
 	// Initialize repositories and services
-	trackRepo := base.NewTrackRepository(db)
+	pkgTrackRepo := base.NewPkgTrackRepository(db)
 
 	// Initialize DDEX service
 	schemaValidator := ddex.NewXMLSchemaValidator()
@@ -173,9 +189,9 @@ func initializeServices(cfg *config.Config) (*services, error) {
 	return &services{
 		analytics: analyticsService,
 		ai:        aiService,
-		tracks:    trackRepo,
+		tracks:    pkgTrackRepo,
 		ddex:      ddexService,
-		db:        db,
+		db:        sqlDB,
 	}, nil
 }
 

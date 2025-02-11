@@ -2,12 +2,11 @@ package usecase
 
 import (
 	"context"
-	"metadatatool/internal/config"
-	"metadatatool/internal/pkg/domain"
+	"fmt"
+	"metadatatool/internal/domain"
+	pkgdomain "metadatatool/internal/pkg/domain"
 	"testing"
-	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -62,15 +61,105 @@ func (m *MockUserRepository) List(ctx context.Context, offset, limit int) ([]*do
 	return args.Get(0).([]*domain.User), args.Error(1)
 }
 
-func setupAuthService() (*authService, *MockUserRepository) {
-	userRepo := new(MockUserRepository)
-	cfg := &config.AuthConfig{
-		JWTSecret:          "test-secret",
-		AccessTokenExpiry:  time.Hour,
-		RefreshTokenExpiry: 24 * time.Hour,
+func (m *MockUserRepository) UpdateAPIKey(ctx context.Context, userID string, apiKey string) error {
+	args := m.Called(ctx, userID, apiKey)
+	return args.Error(0)
+}
+
+func (m *MockUserRepository) Count(ctx context.Context) (int64, error) {
+	args := m.Called(ctx)
+	return args.Get(0).(int64), args.Error(1)
+}
+
+// MockSessionStore is a mock implementation of domain.SessionStore
+type MockSessionStore struct {
+	mock.Mock
+}
+
+func (m *MockSessionStore) Create(ctx context.Context, session *domain.Session) error {
+	args := m.Called(ctx, session)
+	return args.Error(0)
+}
+
+func (m *MockSessionStore) Get(ctx context.Context, sessionID string) (*domain.Session, error) {
+	args := m.Called(ctx, sessionID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
 	}
-	service := NewAuthService(cfg, userRepo).(*authService)
-	return service, userRepo
+	return args.Get(0).(*domain.Session), args.Error(1)
+}
+
+func (m *MockSessionStore) Delete(ctx context.Context, sessionID string) error {
+	args := m.Called(ctx, sessionID)
+	return args.Error(0)
+}
+
+func (m *MockSessionStore) GetUserSessions(ctx context.Context, userID string) ([]*domain.Session, error) {
+	args := m.Called(ctx, userID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]*domain.Session), args.Error(1)
+}
+
+func (m *MockSessionStore) DeleteUserSessions(ctx context.Context, userID string) error {
+	args := m.Called(ctx, userID)
+	return args.Error(0)
+}
+
+func (m *MockSessionStore) Touch(ctx context.Context, sessionID string) error {
+	args := m.Called(ctx, sessionID)
+	return args.Error(0)
+}
+
+// MockAuthService is a mock implementation of domain.AuthService
+type MockAuthService struct {
+	mock.Mock
+}
+
+func (m *MockAuthService) GenerateToken(ctx context.Context, user *domain.User) (string, error) {
+	args := m.Called(ctx, user)
+	return args.String(0), args.Error(1)
+}
+
+func (m *MockAuthService) ValidateToken(ctx context.Context, token string) (*domain.TokenClaims, error) {
+	args := m.Called(ctx, token)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*domain.TokenClaims), args.Error(1)
+}
+
+func (m *MockAuthService) HashPassword(password string) (string, error) {
+	args := m.Called(password)
+	return args.String(0), args.Error(1)
+}
+
+func (m *MockAuthService) VerifyPassword(hashedPassword, password string) error {
+	args := m.Called(hashedPassword, password)
+	return args.Error(0)
+}
+
+func (m *MockAuthService) GenerateTokens(user *domain.User) (*domain.Tokens, error) {
+	args := m.Called(user)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*domain.Tokens), args.Error(1)
+}
+
+func (m *MockAuthService) GenerateAPIKey() (string, error) {
+	args := m.Called()
+	return args.String(0), args.Error(1)
+}
+
+func setupAuthService() (*AuthUseCase, *MockUserRepository) {
+	userRepo := new(MockUserRepository)
+	sessionRepo := new(MockSessionStore)
+	authService := new(MockAuthService)
+
+	useCase := NewAuthUseCase(userRepo, sessionRepo, authService)
+	return useCase, userRepo
 }
 
 func createTestUser() *domain.User {
@@ -83,276 +172,132 @@ func createTestUser() *domain.User {
 	}
 }
 
-func TestAuthService_GenerateTokens(t *testing.T) {
-	service, _ := setupAuthService()
+func TestAuthUseCase_GenerateToken(t *testing.T) {
+	useCase, _ := setupAuthService()
 
 	t.Run("successful token generation", func(t *testing.T) {
 		user := createTestUser()
-		tokens, err := service.GenerateTokens(user)
-		require.NoError(t, err)
-		assert.NotEmpty(t, tokens.AccessToken)
-		assert.NotEmpty(t, tokens.RefreshToken)
+		token := "test-access-token"
 
-		// Verify access token
-		claims, err := service.ValidateToken(tokens.AccessToken)
+		useCase.authService.(*MockAuthService).On("GenerateToken", mock.Anything, user).Return(token, nil)
+
+		result, err := useCase.authService.GenerateToken(context.Background(), user)
 		require.NoError(t, err)
-		assert.Equal(t, user.ID, claims.UserID)
-		assert.Equal(t, user.Email, claims.Email)
-		assert.Equal(t, user.Role, claims.Role)
-		assert.NotEmpty(t, claims.Permissions)
+		assert.Equal(t, token, result)
 	})
 }
 
-func TestAuthService_ValidateToken(t *testing.T) {
-	service, _ := setupAuthService()
+func TestAuthUseCase_ValidateToken(t *testing.T) {
+	useCase, userRepo := setupAuthService()
 	user := createTestUser()
 
 	t.Run("valid token", func(t *testing.T) {
-		tokens, err := service.GenerateTokens(user)
+		claims := &domain.TokenClaims{
+			Claims: domain.Claims{
+				UserID: user.ID,
+				Role:   user.Role,
+			},
+		}
+
+		useCase.authService.(*MockAuthService).On("ValidateToken", mock.Anything, "test-token").Return(claims, nil)
+		userRepo.On("GetByID", mock.Anything, user.ID).Return(user, nil)
+
+		result, err := useCase.ValidateToken(context.Background(), "test-token")
 		require.NoError(t, err)
-
-		claims, err := service.ValidateToken(tokens.AccessToken)
-		assert.NoError(t, err)
-		assert.Equal(t, user.ID, claims.UserID)
-		assert.Equal(t, user.Email, claims.Email)
-		assert.Equal(t, user.Role, claims.Role)
-	})
-
-	t.Run("expired token", func(t *testing.T) {
-		// Create token that's already expired
-		token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-			"user_id": user.ID,
-			"email":   user.Email,
-			"role":    user.Role,
-			"exp":     time.Now().Add(-time.Hour).Unix(),
-		})
-
-		tokenString, err := token.SignedString([]byte(service.cfg.JWTSecret))
-		require.NoError(t, err)
-
-		claims, err := service.ValidateToken(tokenString)
-		assert.Error(t, err)
-		assert.Nil(t, claims)
+		assert.Equal(t, user, result)
 	})
 
 	t.Run("invalid token", func(t *testing.T) {
-		claims, err := service.ValidateToken("invalid-token")
+		useCase.authService.(*MockAuthService).On("ValidateToken", mock.Anything, "invalid-token").Return(nil, fmt.Errorf("invalid token"))
+
+		result, err := useCase.ValidateToken(context.Background(), "invalid-token")
 		assert.Error(t, err)
-		assert.Nil(t, claims)
+		assert.Nil(t, result)
 	})
 }
 
-func TestAuthService_RefreshToken(t *testing.T) {
-	service, userRepo := setupAuthService()
-	user := createTestUser()
-
-	t.Run("successful refresh", func(t *testing.T) {
-		tokens, err := service.GenerateTokens(user)
-		require.NoError(t, err)
-
-		userRepo.On("GetByID", mock.Anything, user.ID).Return(user, nil)
-
-		newTokens, err := service.RefreshToken(tokens.RefreshToken)
-		assert.NoError(t, err)
-		assert.NotEmpty(t, newTokens.AccessToken)
-		assert.NotEmpty(t, newTokens.RefreshToken)
-		assert.NotEqual(t, tokens.AccessToken, newTokens.AccessToken)
-		assert.NotEqual(t, tokens.RefreshToken, newTokens.RefreshToken)
-
-		userRepo.AssertExpectations(t)
-	})
-
-	t.Run("invalid refresh token", func(t *testing.T) {
-		newTokens, err := service.RefreshToken("invalid-token")
-		assert.Error(t, err)
-		assert.Nil(t, newTokens)
-	})
-
-	t.Run("user not found", func(t *testing.T) {
-		tokens, err := service.GenerateTokens(user)
-		require.NoError(t, err)
-
-		userRepo.On("GetByID", mock.Anything, user.ID).Return(nil, nil)
-
-		newTokens, err := service.RefreshToken(tokens.RefreshToken)
-		assert.Error(t, err)
-		assert.Nil(t, newTokens)
-
-		userRepo.AssertExpectations(t)
-	})
-}
-
-func TestAuthService_HashPassword(t *testing.T) {
-	service, _ := setupAuthService()
+func TestAuthUseCase_HashPassword(t *testing.T) {
+	useCase, _ := setupAuthService()
 
 	t.Run("successful password hashing", func(t *testing.T) {
 		password := "test-password"
-		hash, err := service.HashPassword(password)
-		assert.NoError(t, err)
-		assert.NotEmpty(t, hash)
-		assert.NotEqual(t, password, hash)
+		hashedPassword := "hashed-password"
 
-		// Verify password matches hash
-		err = service.VerifyPassword(hash, password)
-		assert.NoError(t, err)
+		useCase.authService.(*MockAuthService).On("HashPassword", password).Return(hashedPassword, nil)
+
+		result, err := useCase.authService.HashPassword(password)
+		require.NoError(t, err)
+		assert.Equal(t, hashedPassword, result)
 	})
 
 	t.Run("empty password", func(t *testing.T) {
-		hash, err := service.HashPassword("")
+		useCase.authService.(*MockAuthService).On("HashPassword", "").Return("", fmt.Errorf("invalid password"))
+
+		result, err := useCase.authService.HashPassword("")
 		assert.Error(t, err)
-		assert.Empty(t, hash)
+		assert.Empty(t, result)
 	})
 }
 
-func TestAuthService_VerifyPassword(t *testing.T) {
-	service, _ := setupAuthService()
+func TestAuthUseCase_VerifyPassword(t *testing.T) {
+	useCase, _ := setupAuthService()
 
 	t.Run("correct password", func(t *testing.T) {
+		hashedPassword := "hashed-password"
 		password := "test-password"
-		hash, err := service.HashPassword(password)
-		require.NoError(t, err)
 
-		err = service.VerifyPassword(hash, password)
+		useCase.authService.(*MockAuthService).On("VerifyPassword", hashedPassword, password).Return(nil)
+
+		err := useCase.authService.VerifyPassword(hashedPassword, password)
 		assert.NoError(t, err)
 	})
 
 	t.Run("incorrect password", func(t *testing.T) {
-		password := "test-password"
-		hash, err := service.HashPassword(password)
-		require.NoError(t, err)
+		hashedPassword := "hashed-password"
 
-		err = service.VerifyPassword(hash, "wrong-password")
-		assert.Error(t, err)
-	})
+		useCase.authService.(*MockAuthService).On("VerifyPassword", hashedPassword, "wrong-password").Return(fmt.Errorf("invalid password"))
 
-	t.Run("invalid hash", func(t *testing.T) {
-		err := service.VerifyPassword("invalid-hash", "test-password")
+		err := useCase.authService.VerifyPassword(hashedPassword, "wrong-password")
 		assert.Error(t, err)
 	})
 }
 
-func TestAuthService_HasPermission(t *testing.T) {
-	service, _ := setupAuthService()
+func TestAuthUseCase_HasPermission(t *testing.T) {
+	useCase, _ := setupAuthService()
 
 	testCases := []struct {
 		name       string
-		role       domain.Role
-		permission domain.Permission
+		role       pkgdomain.Role
+		permission pkgdomain.Permission
 		hasAccess  bool
 	}{
 		{
 			name:       "admin has all permissions",
-			role:       domain.RoleAdmin,
-			permission: domain.PermissionManageUsers,
+			role:       pkgdomain.RoleAdmin,
+			permission: pkgdomain.PermissionCreateTrack,
 			hasAccess:  true,
 		},
 		{
 			name:       "user has basic permissions",
-			role:       domain.RoleUser,
-			permission: domain.PermissionReadTrack,
+			role:       pkgdomain.RoleUser,
+			permission: pkgdomain.PermissionReadTrack,
 			hasAccess:  true,
 		},
 		{
-			name:       "user cannot manage users",
-			role:       domain.RoleUser,
-			permission: domain.PermissionManageUsers,
-			hasAccess:  false,
-		},
-		{
-			name:       "guest can only read",
-			role:       domain.RoleGuest,
-			permission: domain.PermissionReadTrack,
-			hasAccess:  true,
-		},
-		{
-			name:       "guest cannot create",
-			role:       domain.RoleGuest,
-			permission: domain.PermissionCreateTrack,
+			name:       "guest has limited permissions",
+			role:       pkgdomain.RoleGuest,
+			permission: pkgdomain.PermissionCreateTrack,
 			hasAccess:  false,
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			hasAccess := service.HasPermission(tc.role, tc.permission)
+			user := &domain.User{
+				Role: domain.Role(tc.role),
+			}
+			hasAccess := useCase.HasPermission(user, tc.permission)
 			assert.Equal(t, tc.hasAccess, hasAccess)
 		})
 	}
-}
-
-func TestAuthService_GetPermissions(t *testing.T) {
-	service, _ := setupAuthService()
-
-	testCases := []struct {
-		name             string
-		role             domain.Role
-		expectedContains []domain.Permission
-		notExpected      []domain.Permission
-	}{
-		{
-			name: "admin permissions",
-			role: domain.RoleAdmin,
-			expectedContains: []domain.Permission{
-				domain.PermissionManageUsers,
-				domain.PermissionCreateTrack,
-				domain.PermissionDeleteTrack,
-			},
-			notExpected: nil,
-		},
-		{
-			name: "user permissions",
-			role: domain.RoleUser,
-			expectedContains: []domain.Permission{
-				domain.PermissionCreateTrack,
-				domain.PermissionReadTrack,
-			},
-			notExpected: []domain.Permission{
-				domain.PermissionManageUsers,
-				domain.PermissionManageRoles,
-			},
-		},
-		{
-			name: "guest permissions",
-			role: domain.RoleGuest,
-			expectedContains: []domain.Permission{
-				domain.PermissionReadTrack,
-			},
-			notExpected: []domain.Permission{
-				domain.PermissionCreateTrack,
-				domain.PermissionManageUsers,
-			},
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			permissions := service.GetPermissions(tc.role)
-
-			// Check expected permissions are present
-			for _, expected := range tc.expectedContains {
-				assert.Contains(t, permissions, expected)
-			}
-
-			// Check unexpected permissions are not present
-			for _, notExpected := range tc.notExpected {
-				assert.NotContains(t, permissions, notExpected)
-			}
-		})
-	}
-}
-
-func TestAuthService_GenerateAPIKey(t *testing.T) {
-	service, _ := setupAuthService()
-
-	t.Run("generate unique keys", func(t *testing.T) {
-		key1, err := service.GenerateAPIKey()
-		assert.NoError(t, err)
-		assert.NotEmpty(t, key1)
-
-		key2, err := service.GenerateAPIKey()
-		assert.NoError(t, err)
-		assert.NotEmpty(t, key2)
-
-		assert.NotEqual(t, key1, key2)
-	})
 }

@@ -62,6 +62,7 @@ type OpenAIConfig struct {
 	MaxConcurrentRequests int
 	RetryAttempts         int
 	RetryBackoffSeconds   int
+	RequestsPerSecond     int // Rate limit for OpenAI API requests
 }
 
 // AIMetadata holds AI-generated metadata for a track
